@@ -1,66 +1,79 @@
 use std::fmt;
+use log::{debug, trace};
 
-struct Constant (i32);
-
-impl fmt::Debug for Constant {
-	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-		write!(f, "{}", self.0)
-	}
-}
+use crate::value::Value;
 
 #[derive(Debug)]
-enum OpCode {
-	Constant = 0,
+pub enum Op {
+	Constant { idx: usize },
+	Add,
+	Sub,
+	Mul,
+	Div,
 	Return
 }
 
 #[derive(Debug)]
-struct ByteCodeChunk {
-	consts: Vec<Constant>,
-	code: Vec<u8>
+pub struct ByteCodeChunk {
+	pub consts: Vec<Value>,
+	pub code: Vec<Op>
 }
 
-struct VM {
+pub struct VM {
 	chunk: ByteCodeChunk,
-	ip: usize
+	ip: usize,
+	stack: Vec<Value>
 }
 
-enum VMError {
-	UnknownOpCode(u8),
-	UnexpectedEof,
+pub enum VMError {
+	OutOfBoundsIP(usize),
+	OutOfBoundsConst(usize),
 }
 
 impl VM {
-	fn new(chunk: ByteCodeChunk) -> Self {
+	pub fn new(chunk: ByteCodeChunk) -> Self {
 		VM {
 			chunk,
-			ip: 0
+			ip: 0,
+			stack: Vec::new()
 		}
 	}
 
-	fn run(&mut self) -> Result<(), VMError> {
-		while let Some(op) = self.next_byte() {
-			match unsafe { std::mem::transmute::<u8, OpCode>(op) } {
-				OpCode::Constant => {
-					let constant = self.read_constant()?;
+	pub fn run(mut self) -> Result<(), VMError> {
+		debug!("Starting VM");
+		loop {
+			let op = self.chunk.code.get(self.ip).ok_or(VMError::OutOfBoundsIP(self.ip))?;
+			trace!("{:?}", op);
+
+			let mut pop_stack = || self.stack.pop().unwrap();
+
+			match op {
+				Op::Constant { idx } => {
+					let constant = self.chunk.consts.get(*idx).ok_or(VMError::OutOfBoundsConst(*idx))?;
+					self.stack.push(*constant);
 					println!("{:?}", constant);
 				},
-				OpCode::Return => {
+				Op::Return => {
 					return Ok(());
+				},
+				Op::Add => {
+					let (a, b) = (pop_stack(), pop_stack());
+					self.stack.push(a + b);
+				}
+				Op::Sub => {
+					let (a, b) = (pop_stack(), pop_stack());
+					self.stack.push(a - b);
+				}
+				Op::Mul => {
+					let (a, b) = (pop_stack(), pop_stack());
+					self.stack.push(a * b);
+				}
+				Op::Div => {
+					let (a, b) = (pop_stack(), pop_stack());
+					self.stack.push(a / b);
 				}
 			}
+			self.ip += 1;
 		}
-		Err(VMError::UnexpectedEof)
-	}
-
-	fn next_byte(&mut self) -> Option<u8> {
-		let byte = self.chunk.code.get(self.ip)?;
-		self.ip += 1;
-		Some(*byte)
-	}
-
-	fn read_constant(&mut self) -> Result<&Constant, VMError> {
-		let idx = self.next_byte().ok_or(VMError::UnexpectedEof)? as usize;
-		Ok(&self.chunk.consts[idx])
 	}
 }
