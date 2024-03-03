@@ -10,6 +10,10 @@ pub enum Op {
 	Sub,
 	Mul,
 	Div,
+	Pop,
+	/// idx is zero-indexed
+	LoadVar { idx: u32 },
+	SetVar { idx: u32 },
 	Return
 }
 
@@ -36,44 +40,6 @@ impl VM {
 			chunk,
 			ip: 0,
 			stack: Vec::new()
-		}
-	}
-
-	pub fn run(mut self) -> Result<(), VMError> {
-		debug!("Starting VM");
-		loop {
-			let op = self.chunk.code.get(self.ip).ok_or(VMError::OutOfBoundsIP(self.ip))?;
-			trace!("{:?}", op);
-
-			let mut pop_stack = || self.stack.pop().unwrap();
-
-			match op {
-				Op::Constant { idx } => {
-					let constant = self.chunk.consts.get(*idx).ok_or(VMError::OutOfBoundsConst(*idx))?;
-					self.stack.push(*constant);
-					println!("{:?}", constant);
-				},
-				Op::Return => {
-					return Ok(());
-				},
-				Op::Add => {
-					let (a, b) = (pop_stack(), pop_stack());
-					self.stack.push(a + b);
-				}
-				Op::Sub => {
-					let (a, b) = (pop_stack(), pop_stack());
-					self.stack.push(a - b);
-				}
-				Op::Mul => {
-					let (a, b) = (pop_stack(), pop_stack());
-					self.stack.push(a * b);
-				}
-				Op::Div => {
-					let (a, b) = (pop_stack(), pop_stack());
-					self.stack.push(a / b);
-				}
-			}
-			self.ip += 1;
 		}
 	}
 }
