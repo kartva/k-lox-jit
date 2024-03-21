@@ -14,6 +14,8 @@ pub enum Op {
 	/// idx is zero-indexed
 	LoadVar { idx: u32 },
 	SetVar { idx: u32 },
+	JumpLabel { label_id: usize },
+	JumpIfNotZero { label_id: usize },
 	Return
 }
 

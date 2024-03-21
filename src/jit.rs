@@ -1,11 +1,11 @@
 use core::slice;
-use std::io::{self, Write};
+use std::{collections::HashMap, io::{self, Write}};
 
 use crate::{
     value::Value,
     vm::{ByteCodeChunk, Op, VMError, VM},
 };
-use dynasmrt::{aarch64, dynasm, AssemblyOffset, DynasmApi, DynasmLabelApi, ExecutableBuffer};
+use dynasmrt::{aarch64, dynasm, AssemblyOffset, DynamicLabel, DynasmApi, DynasmLabelApi, ExecutableBuffer};
 use log::debug;
 
 #[derive(Debug)]
@@ -70,6 +70,13 @@ impl JIT {
                               // frame pointer acts as base pointer for current function
         );
 
+        let mut labels: HashMap<usize, DynamicLabel> = HashMap::new();
+        for (i, op) in chunk.code.iter().enumerate() {
+            if let Op::JumpLabel { label_id } = op {
+                let label = ops.new_dynamic_label();
+                labels.insert(*label_id, label);
+            }
+        }
         for op in chunk.code {
             match op {
                 Op::Constant { idx } => {
@@ -119,6 +126,19 @@ impl JIT {
                 Op::Pop => {
                     mdynasm!(ops
                         ; add sp, sp, #16
+                    );
+                },
+                Op::JumpLabel { label_id} => {
+                    let label = *labels.get(&label_id).unwrap();
+                    mdynasm!(ops
+                        ; =>label
+                    );
+                },
+                Op::JumpIfNotZero { label_id } => {
+                    let label = *labels.get(&label_id).unwrap();
+                    mdynasm!(ops
+                        ; ldr x0, [sp], #16
+                        ; cbnz x0, =>label
                     );
                 },
                 Op::Return => {
@@ -171,13 +191,51 @@ mod jit_tests {
             code: vec![
                 Op::Constant { idx: 0 }, // var a = 2 | stack: +1
                 Op::Constant { idx: 1 }, // var b = 3 | stack: +2
-                Op::SetVar { idx: 0 }, // set var a = b | stack: +2
-                Op::Pop, // pop b | stack: +1
+                Op::SetVar { idx: 0 }, // set var a = b | stack: 2
+                Op::Pop, // pop b | stack: -1
                 Op::Return,
             ],
         };
         let jit = JIT::compile(chunk).unwrap();
         let ret = jit.run();
         assert_eq!(ret, 2);
+    }
+
+    #[test]
+    fn jit_jump() {
+        let a = 2;
+        let b = 5;
+        let i = 5;
+
+        // we calculate a + b * i
+        let chunk = ByteCodeChunk {
+            consts: vec![Value(a), Value(b), Value(1), Value(i) /* i start val */],
+            code: vec![
+                Op::Constant { idx: 0 }, // var a = 2 | stack: +1
+                Op::Constant { idx: 3 }, // var i = 5 | stack: +2
+
+                Op::JumpLabel { label_id: 0 }, // label 0
+
+                Op::LoadVar { idx: 0 }, // load var t_a | stack: +3
+                Op::Constant { idx: 1 }, // load var t_b | stack: +4
+                Op::Add, // push t_a + t_b, pop both t_a and t_b | stack: -3
+                Op::SetVar { idx: 0 }, // set var a = t_a + t_b | stack: 3
+                Op::Pop, // pop t_a + t_b | stack: -2
+
+                // loop end statement
+                Op::Constant { idx: 2 }, // load 1 on stack | stack: +3
+                Op::LoadVar { idx: 1 }, // load var i (at stack pos 1) | stack: +4
+                Op::Sub, // i - 1, pop both i and 1 | stack: -3
+                Op::SetVar { idx: 1 }, // set var i = i - 1 (at stack pos 1) | stack: 3
+                Op::JumpIfNotZero { label_id: 0 }, // if i != 0 jump to label 0 | stack: -2
+
+                // Epilogue
+                Op::Pop, // pop i | stack: -1
+                Op::Return,
+            ],
+        };
+        let jit = JIT::compile(chunk).unwrap();
+        let ret = jit.run();
+        assert_eq!(ret, 17);
     }
 }
