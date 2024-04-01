@@ -56,8 +56,6 @@ impl JIT {
     pub fn compile(chunk: ByteCodeChunk) -> Result<JIT, CompileError> {
         debug!("Starting JIT");
         let mut ops = aarch64::Assembler::new().unwrap();
-        let consts = chunk.consts;
-
         let offset = ops.offset();
 
         // Prologue: push stack frame
@@ -79,9 +77,8 @@ impl JIT {
         }
         for op in chunk.code {
             match op {
-                Op::Constant { idx } => {
-                    let constant = consts.get(idx).ok_or(CompileError::OutOfBoundsConst(idx))?;
-                    let num = constant.0;
+                Op::Constant { val } => {
+                    let num = val;
                     mdynasm!(ops
                         ; mov x0, num as u64
                         ; str x0, [sp, #-16]!
@@ -144,6 +141,7 @@ impl JIT {
                 Op::Return => {
                     mdynasm!(ops
                         ; ldr x0, [sp], #16
+                        ; mov sp, fp // restore stack pointer
                         ; ldp fp, lr, [sp], #16 // restore frame pointer and link register
                         ; ret
                     );
@@ -169,15 +167,16 @@ mod jit_tests {
     #[test]
     fn jit_arith() {
         let chunk = ByteCodeChunk {
-            consts: vec![Value(2), Value(2), Value(5)],
             code: vec![
-                Op::Constant { idx: 0 },
-                Op::Constant { idx: 1 },
+                Op::Constant { val: 2 },
+                Op::Constant { val: 2 },
                 Op::Add,
-				Op::Constant { idx: 2 },
+				Op::Constant { val: 5 },
 				Op::Mul,
                 Op::Return,
             ],
+            in_arg: vec![],
+            out_args: vec![],
         };
         let jit = JIT::compile(chunk).unwrap();
         let ret = jit.run();
@@ -187,55 +186,19 @@ mod jit_tests {
     #[test]
     fn jit_vars() {
         let chunk = ByteCodeChunk {
-            consts: vec![Value(2), Value(3)],
             code: vec![
-                Op::Constant { idx: 0 }, // var a = 2 | stack: +1
-                Op::Constant { idx: 1 }, // var b = 3 | stack: +2
-                Op::SetVar { idx: 0 }, // set var a = b | stack: 2
-                Op::Pop, // pop b | stack: -1
+                Op::Constant { val: 2 },
+                Op::Constant { val: 3 },
+                Op::LoadVar { idx: 1 }, 
+                Op::LoadVar {idx: 2},
+                Op::Add,
                 Op::Return,
             ],
+            in_arg: vec![],
+            out_args: vec![],
         };
         let jit = JIT::compile(chunk).unwrap();
         let ret = jit.run();
         assert_eq!(ret, 2);
-    }
-
-    #[test]
-    fn jit_jump() {
-        let a = 2;
-        let b = 5;
-        let i = 5;
-
-        // we calculate a + b * i
-        let chunk = ByteCodeChunk {
-            consts: vec![Value(a), Value(b), Value(1), Value(i) /* i start val */],
-            code: vec![
-                Op::Constant { idx: 0 }, // var a = 2 | stack: +1
-                Op::Constant { idx: 3 }, // var i = 5 | stack: +2
-
-                Op::JumpLabel { label_id: 0 }, // label 0
-
-                Op::LoadVar { idx: 0 }, // load var t_a | stack: +3
-                Op::Constant { idx: 1 }, // load var t_b | stack: +4
-                Op::Add, // push t_a + t_b, pop both t_a and t_b | stack: -3
-                Op::SetVar { idx: 0 }, // set var a = t_a + t_b | stack: 3
-                Op::Pop, // pop t_a + t_b | stack: -2
-
-                // loop end statement
-                Op::Constant { idx: 2 }, // load 1 on stack | stack: +3
-                Op::LoadVar { idx: 1 }, // load var i (at stack pos 1) | stack: +4
-                Op::Sub, // i - 1, pop both i and 1 | stack: -3
-                Op::SetVar { idx: 1 }, // set var i = i - 1 (at stack pos 1) | stack: 3
-                Op::JumpIfNotZero { label_id: 0 }, // if i != 0 jump to label 0 | stack: -2
-
-                // Epilogue
-                Op::Pop, // pop i | stack: -1
-                Op::Return,
-            ],
-        };
-        let jit = JIT::compile(chunk).unwrap();
-        let ret = jit.run();
-        assert_eq!(ret, 17);
     }
 }

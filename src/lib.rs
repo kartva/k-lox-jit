@@ -1,4 +1,6 @@
 mod lex;
+pub mod parse;
 mod vm;
-mod jit;
+pub mod jit;
 mod value;
+pub mod codegen;

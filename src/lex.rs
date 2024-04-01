@@ -50,7 +50,7 @@ enum TokenTy {
 }
 
 #[derive(PartialEq, Eq, Debug)]
-struct Token {
+pub struct Token {
 	start: usize,
 	end: usize,
 	kind: TokenTy
@@ -66,7 +66,7 @@ struct ParseError {
     pub position: usize,
 }
 
-struct Tokens<'a> {
+pub struct Tokens<'a> {
     src: &'a [u8],
     line_no: usize,
     start: usize,

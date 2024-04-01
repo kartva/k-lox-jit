@@ -3,9 +3,9 @@ use log::{debug, trace};
 
 use crate::value::Value;
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub enum Op {
-	Constant { idx: usize },
+	Constant { val: i64 },
 	Add,
 	Sub,
 	Mul,
@@ -20,9 +20,21 @@ pub enum Op {
 }
 
 #[derive(Debug)]
+pub enum Var {
+	Stack(usize),
+	Reg(usize)
+}
+
+#[derive(Debug)]
+pub struct ByteCode {
+	pub chunks: Vec<ByteCodeChunk>
+}
+
+#[derive(Debug, Default)]
 pub struct ByteCodeChunk {
-	pub consts: Vec<Value>,
-	pub code: Vec<Op>
+	pub in_arg: Vec<Var>,
+	pub code: Vec<Op>,
+	pub out_args: Vec<Var>
 }
 
 pub struct VM {
