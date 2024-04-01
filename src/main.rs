@@ -7,6 +7,7 @@ use log::debug;
 use lox_jit::codegen::codegen;
 use lox_jit::jit::JIT;
 use lox_jit::parse::parse_text;
+use simple_logger::SimpleLogger;
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -15,6 +16,7 @@ struct Args {
 }
 
 fn main() {
+    SimpleLogger::new().init().unwrap();
     let args = Args::parse();
 
     let mut buf = String::new();
