@@ -1,4 +1,3 @@
-mod lex;
 pub mod parse;
 mod vm;
 pub mod jit;

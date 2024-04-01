@@ -1,7 +1,6 @@
 use std::io::Read;
 use std::path::PathBuf;
 use std::fs::File;
-use chumsky::debug;
 use clap::Parser;
 
 use log::debug;

@@ -1,11 +1,10 @@
 use core::slice;
 use std::{collections::HashMap, io::{self, Write}};
 
-use crate::{
-    value::Value,
-    vm::{ByteCodeChunk, Op, VMError, VM},
-};
-use dynasmrt::{aarch64, dynasm, AssemblyOffset, DynamicLabel, DynasmApi, DynasmLabelApi, ExecutableBuffer};
+use crate::
+    vm::{ByteCodeChunk, Op}
+;
+use dynasmrt::{aarch64, dynasm, DynamicLabel, DynasmApi, ExecutableBuffer, DynasmLabelApi};
 use log::debug;
 
 #[derive(Debug)]
@@ -69,7 +68,7 @@ impl JIT {
         );
 
         let mut labels: HashMap<usize, DynamicLabel> = HashMap::new();
-        for (i, op) in chunk.code.iter().enumerate() {
+        for op in chunk.code.iter() {
             if let Op::JumpLabel { label_id } = op {
                 let label = ops.new_dynamic_label();
                 labels.insert(*label_id, label);

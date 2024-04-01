@@ -1,14 +1,3 @@
-use std::collections::HashMap;
-
-use crate::{lex::Tokens, vm::ByteCodeChunk};
-
-enum Op {
-    Add,
-    Sub,
-    Mul,
-    Div,
-}
-
 #[derive(Debug, PartialEq, Eq)]
 pub enum Expr {
     Neg(Box<Expr>),
@@ -31,7 +20,7 @@ pub enum Expr {
 }
 
 use chumsky::{combinator::Repeated, prelude::*};
-fn parse<'src>() -> impl Parser<char, Vec<Expr>, Error = Simple<char>> {
+fn parse() -> impl Parser<char, Vec<Expr>, Error = Simple<char>> {
     let ident = text::ident().padded();
 
     let expr = recursive(|expr| {

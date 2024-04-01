@@ -48,18 +48,13 @@ impl BlockCtx {
 		reg
 	}
 
+	#[allow(dead_code)]
 	fn get_mut(&mut self, name: &str) -> Option<&mut StackIdx> {
 		self.vars.get_mut(name).or_else(|| self.parent_ctx.as_mut().and_then(|ctx| ctx.get_mut(name)))
 	}
 
 	fn get(&self, name: &str) -> Option<&StackIdx> {
 		self.vars.get(name).or_else(|| self.parent_ctx.as_ref().and_then(|ctx| ctx.get(name)))
-	}
-
-	fn mutate_var(&mut self, name: &str, mut ssa: MemoryManager) {
-		if let Some(existing_reg) = self.get_mut(name) {
-			*existing_reg = ssa.alloc();
-		}
 	}
 
 	fn create_inner_block_ctx(&mut self) {
@@ -73,29 +68,29 @@ impl BlockCtx {
 	}
 }
 
-fn emit_expr<'a>(e: &Expr, bc: &mut BlockCtx, ssa: &mut MemoryManager) {
+fn emit_expr(e: &Expr, bc: &mut BlockCtx) {
 	match e {
 		Expr::Num(n) => {
 			bc.bc.code.push(Op::Constant { val: *n });
 		},
 		Expr::Add(lhs, rhs) => {
-			emit_expr(lhs, bc, ssa);
-			emit_expr(rhs, bc, ssa);
+			emit_expr(lhs, bc);
+			emit_expr(rhs, bc);
 			bc.bc.code.push(Op::Add);
 		},
 		Expr::Sub(lhs, rhs) => {
-			emit_expr(lhs, bc, ssa);
-			emit_expr(rhs, bc, ssa);
+			emit_expr(lhs, bc);
+			emit_expr(rhs, bc);
 			bc.bc.code.push(Op::Sub);
 		},
 		Expr::Mul(lhs, rhs) => {
-			emit_expr(lhs, bc, ssa);
-			emit_expr(rhs, bc, ssa);
+			emit_expr(lhs, bc);
+			emit_expr(rhs, bc);
 			bc.bc.code.push(Op::Mul);
 		},
 		Expr::Div(lhs, rhs) => {
-			emit_expr(lhs, bc, ssa);
-			emit_expr(rhs, bc, ssa);
+			emit_expr(lhs, bc);
+			emit_expr(rhs, bc);
 			bc.bc.code.push(Op::Div);
 		},
 		Expr::Var(name) => {
@@ -108,10 +103,10 @@ fn emit_expr<'a>(e: &Expr, bc: &mut BlockCtx, ssa: &mut MemoryManager) {
 
 fn emit_let(e: Expr, ctx: &mut BlockCtx, ssa: &mut MemoryManager) {
 	if let Expr::Let { name, rhs } = e {
-		emit_expr(&rhs, ctx, ssa);
+		emit_expr(&rhs, ctx);
 		ctx.alloc(name, ssa); // emit_expr pushes result on stack
 	} else {
-		emit_expr(&e, ctx, ssa);
+		emit_expr(&e, ctx);
 		ctx.bc.code.push(Op::Pop);
 	}
 }
@@ -129,7 +124,7 @@ fn emit_fn(e: Expr, ctx: &mut BlockCtx, mm: &mut MemoryManager, blocks: &mut Vec
 			emit_let(stmt, ctx, mm);
 		}
 
-		emit_expr(&ret, ctx, mm);
+		emit_expr(&ret, ctx);
 		ctx.bc.code.push(Op::Return);
 
 		let finished_block = ctx.finish_block();

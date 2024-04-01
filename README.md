@@ -4,7 +4,7 @@ variables, loops (jump instruction)
 
 # Running the example file
 ```bash
-cargo build --quiet && qemu-aarch64 -E RUST_LOG=trace -L /usr/aarch64-linux-gnu target/aarch64-unknown-linux-gnu/debug/lox-jit test.lox
+cargo run test.lox
 ```
 
 # How to debug generated assembly

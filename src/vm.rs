@@ -1,8 +1,3 @@
-use std::fmt;
-use log::{debug, trace};
-
-use crate::value::Value;
-
 #[derive(Debug, PartialEq, Eq, Hash)]
 pub enum Op {
 	Constant { val: i64 },
@@ -35,25 +30,4 @@ pub struct ByteCodeChunk {
 	pub in_arg: Vec<Var>,
 	pub code: Vec<Op>,
 	pub out_args: Vec<Var>
-}
-
-pub struct VM {
-	chunk: ByteCodeChunk,
-	ip: usize,
-	stack: Vec<Value>
-}
-
-pub enum VMError {
-	OutOfBoundsIP(usize),
-	OutOfBoundsConst(usize),
-}
-
-impl VM {
-	pub fn new(chunk: ByteCodeChunk) -> Self {
-		VM {
-			chunk,
-			ip: 0,
-			stack: Vec::new()
-		}
-	}
 }
