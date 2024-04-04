@@ -31,13 +31,15 @@ use chumsky::{combinator::Repeated, prelude::*};
 fn parse() -> impl Parser<char, Vec<Expr>, Error = Simple<char>> {
     let ident = text::ident().padded();
 
+    let delim = |c| just(c).padded();
+
     let expr = recursive(|expr| {
         let int = text::int(10)
             .map(|s: String| Expr::Num(s.parse().unwrap()))
             .padded();
 
         let atom = int
-            .or(expr.clone().delimited_by(just('('), just(')')))
+            .or(expr.clone().delimited_by(delim('('), delim(')')))
             .or(ident.debug("var").map(Expr::Var));
 
         let call = ident
@@ -45,8 +47,8 @@ fn parse() -> impl Parser<char, Vec<Expr>, Error = Simple<char>> {
             .then(
                 expr.clone()
                     .padded()
-                    .separated_by(just(','))
-                    .delimited_by(just('('), just(')'))
+                    .separated_by(delim(','))
+                    .delimited_by(delim('('), delim(')'))
                     .debug("call_args"),
             )
             .map(|(name, args)| Expr::Call(name, args));
@@ -101,7 +103,7 @@ fn parse() -> impl Parser<char, Vec<Expr>, Error = Simple<char>> {
         .padded()
         .ignore_then(ident.debug("var_name"))
         .then(
-            just('=')
+            delim('=')
                 .ignore_then(expr.clone().debug("var_rhs"))
                 .or_not(),
         )
@@ -113,7 +115,7 @@ fn parse() -> impl Parser<char, Vec<Expr>, Error = Simple<char>> {
 
     let var_set = ident
         .debug("var_name")
-        .then_ignore(just('='))
+        .then_ignore(delim('='))
         .then(expr.clone().debug("var_rhs"))
         .map(|(name, rhs)| Expr::Set {
             name,
@@ -122,15 +124,15 @@ fn parse() -> impl Parser<char, Vec<Expr>, Error = Simple<char>> {
         .debug("var_set");
 
     let stmt_block = (var_decl.or(var_set).or(expr.clone()))
-        .separated_by(just(';'))
-        .delimited_by(just('{'), just('}'))
+        .separated_by(delim(';'))
+        .delimited_by(delim('{'), delim('}'))
         .debug("{stmt_block}");
 
     let r#fn = text::keyword("fn")
         .ignore_then(ident.debug("fn_name"))
         .then(ident
-            .separated_by(just(','))
-            .delimited_by(just('('), just(')'))
+            .separated_by(delim(','))
+            .delimited_by(delim('('), delim(')'))
             .padded()
             .debug("arg_names")
         )
