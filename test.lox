@@ -1,5 +1,8 @@
-fn main {
-	let x = 2;
-	let y = 3;
+fn add x y {
 	x + y
+}
+
+fn main {
+	var a = 2;
+	add a 2
 }

@@ -1,11 +1,12 @@
 use std::io::Read;
 use std::path::PathBuf;
 use std::fs::File;
+use std::ptr::null;
 use clap::Parser;
 
 use log::debug;
 use lox_jit::codegen::codegen;
-use lox_jit::jit::JIT;
+use lox_jit::jit::CompiledBlockCache;
 use lox_jit::parse::parse_text;
 use simple_logger::SimpleLogger;
 
@@ -25,9 +26,9 @@ fn main() {
 
     let parsed = parse_text(&buf).unwrap();
     debug!("{:#?}", parsed);
-    let mut bytecode = codegen(parsed);
+    let bytecode = codegen(parsed);
     debug!("{:#?}", bytecode);
-    let jit = JIT::compile(bytecode.chunks.pop().unwrap()).unwrap();
-    let ret = jit.run();
+    let mut cbc = CompiledBlockCache::new(bytecode);
+    let ret = unsafe { CompiledBlockCache::call_fn(&mut *cbc, 0, null(), 0) };
     println!("{}", ret);
 }

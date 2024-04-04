@@ -1,22 +1,14 @@
-use core::slice;
-use std::{collections::HashMap, io::{self, Write}};
+use std::{collections::HashMap, marker::PhantomPinned, pin::{self, pin, Pin}};
 
 use crate::
-    vm::{ByteCodeChunk, Op}
+    vm::{ByteCode, ByteCodeChunk, Op}
 ;
-use dynasmrt::{aarch64, dynasm, DynamicLabel, DynasmApi, ExecutableBuffer, DynasmLabelApi};
+use dynasmrt::{aarch64, dynasm, AssemblyOffset, DynamicLabel, DynasmApi, DynasmLabelApi, ExecutableBuffer};
 use log::debug;
 
 #[derive(Debug)]
 pub enum CompileError {
     OutOfBoundsConst(usize),
-}
-
-extern "C" fn print(buf: *const u8, len: u64) {
-    let buf = unsafe { slice::from_raw_parts(buf, len as usize) };
-    let s = std::str::from_utf8(buf).unwrap();
-    io::stdout().write_all(s.as_bytes()).unwrap();
-    println!("print was called with buf {:?} and len {}", buf, len);
 }
 
 macro_rules! mdynasm {
@@ -46,14 +38,62 @@ macro_rules! two_arg_one_ret {
     }
 }
 
-pub struct JIT {
-    _exec_buf: ExecutableBuffer,
-	func: *const u8,
+fn spill_stack_to_args(ops: &mut aarch64::Assembler, num_args: usize) {
+    for i in 0..(num_args as u32) {
+        mdynasm!(ops
+            ; ldr X(i), [sp], #16
+        );
+    }
 }
 
-impl JIT {
-    pub fn compile(chunk: ByteCodeChunk) -> Result<JIT, CompileError> {
+fn spill_args_to_stack(ops: &mut aarch64::Assembler, num_args: usize) {
+    for i in (0..(num_args as u32)).rev() {
+        mdynasm!(ops
+            ; str X(i), [sp, #-16]!
+        );
+    }
+}
+
+pub struct CompiledBlockCache {
+    bc: ByteCode,
+    // add exec metadata to ExecutableBuffer for specialized compilation
+    // switch to LRU cache
+    cache: HashMap<usize, (ExecutableBuffer, AssemblyOffset)>,
+}
+
+impl CompiledBlockCache {
+    pub fn new(bc: ByteCode) -> Box<CompiledBlockCache> {
+        Box::new(CompiledBlockCache {
+            bc,
+            cache: HashMap::new()
+        })
+    }
+
+    /// # Safety
+    /// cbc must be a valid pointer and not be moved
+    pub unsafe extern "C" fn call_fn(cbc: *mut Self, idx: u32, argv: *const i64, _argc: u32) -> i64 {
+        let cbc_ref = unsafe { &mut *cbc };
+        let compiled = if let Some(cached_compiled) = cbc_ref.cache.get(&(idx as usize)) {
+            // check cache if requested block has already been compiled
+            cached_compiled
+        } else {
+            cbc_ref.cache.insert(idx as usize, unsafe {Self::compile(cbc, idx)});
+            cbc_ref.cache.get(&(idx as usize)).unwrap()
+        };
+
+        // Safety: the ExecutableBuffer is guaranteed to be valid
+        let (exec_buf, offset) = compiled;
+        let f: extern "C" fn(*const i64) -> i64 = unsafe { std::mem::transmute(exec_buf.ptr(*offset)) };
+        f(argv)
+    }
+
+    /// # Safety
+    /// cbc must be a valid pointer and not be moved
+    pub unsafe fn compile(cbc: *mut Self, idx: u32) -> (ExecutableBuffer, AssemblyOffset) {
+        let cbc_ref = unsafe { &*cbc };
         debug!("Starting JIT");
+        let chunk = &cbc_ref.bc.chunks[idx as usize];
+
         let mut ops = aarch64::Assembler::new().unwrap();
         let offset = ops.offset();
 
@@ -63,9 +103,18 @@ impl JIT {
             // rustc may omit frame pointers for builds
             // if saved fp value seems off, enable frame pointers in config.toml
             ; stp fp, lr, [sp, #-16]!
-            ; add fp, sp, #16 // frame pointer points to location of previous frame pointer
-                              // frame pointer acts as base pointer for current function
+            ; mov fp, sp    // frame pointer points to location of previous frame pointer
+                            // frame pointer acts as base pointer for current function
         );
+
+        // push args to stack
+        // x0 should contain pointer to args
+        for _ in 0..chunk.in_arg {
+            mdynasm!(ops
+                ; ldr x1, [x0], #16
+                ; str x1, [sp, #-16]!
+            );
+        }
 
         let mut labels: HashMap<usize, DynamicLabel> = HashMap::new();
         for op in chunk.code.iter() {
@@ -74,10 +123,10 @@ impl JIT {
                 labels.insert(*label_id, label);
             }
         }
-        for op in chunk.code {
+        for op in &chunk.code {
             match op {
                 Op::Constant { val } => {
-                    let num = val;
+                    let num = *val;
                     mdynasm!(ops
                         ; mov x0, num as u64
                         ; str x0, [sp, #-16]!
@@ -105,7 +154,7 @@ impl JIT {
                 },
                 Op::LoadVar { idx } => {
                     mdynasm!(ops
-                        ; sub x0, x29, #((idx + 1) * 16) // calculate addr
+                        ; sub x0, fp, #((idx + 1) * 16) // calculate addr
                         // attempted to do this using a negative offset for ldr
                         // did not work
                         ; ldr x0, [x0] // load from address
@@ -114,7 +163,7 @@ impl JIT {
                 },
                 Op::SetVar { idx } => {
                     mdynasm!(ops
-                        ; sub x1, x29, #((idx + 1) * 16) // calculate addr
+                        ; sub x1, fp, #((idx + 1) * 16) // calculate addr
                         ; ldr x0, [sp] // load new value from stack
                         ; str x0, [x1] // update on stack
                     );
@@ -124,18 +173,56 @@ impl JIT {
                         ; add sp, sp, #16
                     );
                 },
+                Op::LessThan => {
+                    two_arg_one_ret!(ops
+                        ; cmp x0, x1
+                        ; cset x0, ge // are inverted since cset sets to 1 if true
+                    );
+                },
+                Op::GreaterThan => {
+                    two_arg_one_ret!(ops
+                        ; cmp x0, x1
+                        ; cset x0, le
+                    );
+                },
+                Op::LessThanEq => {
+                    two_arg_one_ret!(ops
+                        ; cmp x0, x1
+                        ; cset x0, gt
+                    );
+                },
+                Op::GreaterThanEq => {
+                    two_arg_one_ret!(ops
+                        ; cmp x0, x1
+                        ; cset x0, lt
+                    );
+                },
                 Op::JumpLabel { label_id} => {
-                    let label = *labels.get(&label_id).unwrap();
+                    let label = *labels.get(label_id).unwrap();
                     mdynasm!(ops
                         ; =>label
                     );
                 },
                 Op::JumpIfNotZero { label_id } => {
-                    let label = *labels.get(&label_id).unwrap();
+                    let label = *labels.get(label_id).unwrap();
                     mdynasm!(ops
                         ; ldr x0, [sp], #16
                         ; cbnz x0, =>label
                     );
+                },
+                Op::Call { idx, word_argc } => {
+                    let num_args = *word_argc as usize;
+                    spill_stack_to_args(&mut ops, num_args);
+                    mdynasm!(ops
+                        ; mov x0, cbc as u64
+                        ; mov w1, *idx as u64
+                        ; mov x2, sp
+                        ; mov x3, *word_argc as u64
+                        ; bl CompiledBlockCache::call_fn as usize // call function
+                        ; add sp, sp, #(word_argc * 16) // pop args
+                        ; str x0, [sp, #-16]! // store return value on stack
+                    );
+                    spill_args_to_stack(&mut ops, num_args);
                 },
                 Op::Return => {
                     mdynasm!(ops
@@ -149,38 +236,15 @@ impl JIT {
         }
 
         let buf = ops.finalize().unwrap();
-        Ok(JIT { func: buf.ptr(offset), _exec_buf: buf })
+        (buf, offset)
     }
-
-	pub fn run(&self) -> i64 {
-		// Safety: the ExecutableBuffer is guaranteed to be valid
-		let f: extern "C" fn() -> i64 = unsafe { std::mem::transmute(self.func) };
-		f()
-	}
 }
 
 #[cfg(test)]
 mod jit_tests {
-    use super::*;
+    use std::ptr::null;
 
-    #[test]
-    fn jit_arith() {
-        let chunk = ByteCodeChunk {
-            code: vec![
-                Op::Constant { val: 2 },
-                Op::Constant { val: 2 },
-                Op::Add,
-				Op::Constant { val: 5 },
-				Op::Mul,
-                Op::Return,
-            ],
-            in_arg: vec![],
-            out_args: vec![],
-        };
-        let jit = JIT::compile(chunk).unwrap();
-        let ret = jit.run();
-        assert_eq!(ret, (2 + 2) * 5);
-    }
+    use super::*;
 
     #[test]
     fn jit_vars() {
@@ -188,16 +252,17 @@ mod jit_tests {
             code: vec![
                 Op::Constant { val: 2 },
                 Op::Constant { val: 3 },
-                Op::LoadVar { idx: 1 }, 
-                Op::LoadVar {idx: 2},
+                Op::LoadVar { idx: 0 }, 
+                Op::LoadVar { idx: 1 },
                 Op::Add,
                 Op::Return,
             ],
-            in_arg: vec![],
-            out_args: vec![],
+            in_arg: 0,
+            out_args: 0,
         };
-        let jit = JIT::compile(chunk).unwrap();
-        let ret = jit.run();
-        assert_eq!(ret, 2);
+        let bytecode = ByteCode { chunks: vec![chunk] };
+        let mut cbc = CompiledBlockCache::new(bytecode);
+        let ret = unsafe { CompiledBlockCache::call_fn(&mut *cbc, 0, null(), 0) };
+        assert_eq!(ret, 5);
     }
 }

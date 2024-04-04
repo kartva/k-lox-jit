@@ -7,8 +7,16 @@ pub enum Expr {
     Div(Box<Expr>, Box<Expr>),
     Add(Box<Expr>, Box<Expr>),
     Sub(Box<Expr>, Box<Expr>),
+    LessThan(Box<Expr>, Box<Expr>),
+    GreaterThan(Box<Expr>, Box<Expr>),
+    LessThanEq(Box<Expr>, Box<Expr>),
+    GreaterThenEq(Box<Expr>, Box<Expr>),
     Call(String, Vec<Expr>),
-    Let {
+    VarDecl {
+        name: String,
+        rhs: Option<Box<Expr>>,
+    },
+    Set {
         name: String,
         rhs: Box<Expr>,
     },
@@ -34,25 +42,28 @@ fn parse() -> impl Parser<char, Vec<Expr>, Error = Simple<char>> {
 
         let call = ident
             .debug("call_func_name")
-            .then(Repeated::at_least(
-                expr.clone().padded().debug("call_arg").repeated(),
-                1,
-            ))
+            .then(
+                expr.clone()
+                    .padded()
+                    .separated_by(just(',').padded())
+                    .delimited_by(just('('), just(')'))
+                    .debug("call_args"),
+            )
             .map(|(name, args)| Expr::Call(name, args));
 
         let op = |c| just(c).padded();
 
-        let unary = op('-')
+        let unary = op("-")
             .repeated()
-            .then(atom.or(call))
+            .then(call.or(atom))
             .foldr(|_op, rhs| Expr::Neg(Box::new(rhs)));
 
         let product = unary
             .clone()
             .then(
-                op('*')
+                op("*")
                     .to(Expr::Mul as fn(_, _) -> _)
-                    .or(op('/').to(Expr::Div as fn(_, _) -> _))
+                    .or(op("/").to(Expr::Div as fn(_, _) -> _))
                     .then(unary)
                     .repeated(),
             )
@@ -61,39 +72,68 @@ fn parse() -> impl Parser<char, Vec<Expr>, Error = Simple<char>> {
         let sum = product
             .clone()
             .then(
-                op('+')
+                op("+")
                     .to(Expr::Add as fn(_, _) -> _)
-                    .or(op('-').to(Expr::Sub as fn(_, _) -> _))
+                    .or(op("-").to(Expr::Sub as fn(_, _) -> _))
                     .then(product)
                     .repeated(),
             )
             .foldl(|lhs, (op, rhs)| op(Box::new(lhs), Box::new(rhs)));
 
-        sum
+        let cmp = sum
+            .clone()
+            .then(
+                op("<")
+                    .to(Expr::LessThan as fn(_, _) -> _)
+                    .or(op(">").to(Expr::GreaterThan as fn(_, _) -> _))
+                    .or(op("<=").to(Expr::LessThanEq as fn(_, _) -> _))
+                    .or(op(">=").to(Expr::GreaterThenEq as fn(_, _) -> _))
+                    .then(sum)
+                    .repeated(),
+            )
+            .foldl(|lhs, (op, rhs)| op(Box::new(lhs), Box::new(rhs)));
+
+        cmp
     })
     .debug("expr");
 
-    let r#let = text::keyword("let")
+    let var_decl = text::keyword("var")
         .padded()
-        .ignore_then(ident.debug("let_name"))
+        .ignore_then(ident.debug("var_name"))
+        .then(
+            just('=')
+                .ignore_then(expr.clone().debug("var_rhs"))
+                .or_not(),
+        )
+        .map(|(name, rhs)| Expr::VarDecl {
+            name,
+            rhs: rhs.map(Box::new),
+        })
+        .debug("var_decl");
+
+    let var_set = ident
+        .debug("var_name")
         .then_ignore(just('='))
-        .then(expr.clone().debug("let_rhs"))
-        .map(|(name, rhs)| Expr::Let {
+        .then(expr.clone().debug("var_rhs"))
+        .map(|(name, rhs)| Expr::Set {
             name,
             rhs: Box::new(rhs),
         })
-        .debug("let");
+        .debug("var_set");
 
-    let stmt_block = (r#let.or(expr.clone()))
+    let stmt_block = (var_decl.or(var_set).or(expr.clone()))
         .separated_by(just(';').padded())
         .debug("stmt_block");
 
     let r#fn = text::keyword("fn")
         .ignore_then(ident.debug("fn_name"))
-        .then(ident.repeated().debug("arg_name"))
-        .then_ignore(just('{'))
-        .then(stmt_block.clone())
-        .then_ignore(just('}'))
+        .then(ident
+            .separated_by(just(',').padded())
+            .delimited_by(just('('), just(')'))
+            .padded()
+            .debug("arg_names")
+        )
+        .then(stmt_block.clone().delimited_by(just('{'), just('}')).debug("{stmt_block}").padded())
         .map(|((name, args), body)| Expr::Fn { name, args, body })
         .debug("fn");
 
@@ -108,10 +148,11 @@ pub fn parse_text(src: &str) -> Result<Vec<Expr>, Vec<Simple<char>>> {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     #[test]
     fn test_function() {
-        use super::*;
-        let src = "fn add x y { let x = x + y; x }";
+        let src = "fn add x y { var x = x + y; x }";
         let (expr, err) = parse().parse_recovery_verbose(src);
         if !err.is_empty() {
             panic!("{:?}", err);
@@ -122,16 +163,44 @@ mod tests {
                 name: "add".to_string(),
                 args: vec!["x".to_string(), "y".to_string()],
                 body: vec!(
-                    Expr::Let {
+                    Expr::VarDecl {
                         name: "x".to_string(),
-                        rhs: Box::new(Expr::Add(
+                        rhs: Some(Box::new(Expr::Add(
                             Box::new(Expr::Var("x".to_string())),
                             Box::new(Expr::Var("y".to_string()))
-                        )),
+                        ))),
                     },
                     Expr::Var("x".to_string())
                 ),
             }])
+        );
+    }
+
+    #[test]
+    fn test_functions_call() {
+        let src = "fn fst (x, y) { x }
+                   fn sec (x, y) { fst (y, x) }";
+        let (expr, err) = parse().parse_recovery_verbose(src);
+        if !err.is_empty() {
+            panic!("{:?}", err);
+        }
+        assert_eq!(
+            expr,
+            Some(vec![
+                Expr::Fn {
+                    name: "fst".to_string(),
+                    args: vec!["x".to_string(), "y".to_string()],
+                    body: vec!(Expr::Var("x".to_string())),
+                },
+                Expr::Fn {
+                    name: "sec".to_string(),
+                    args: vec!["x".to_string(), "y".to_string()],
+                    body: vec!(Expr::Call(
+                        "fst".to_string(),
+                        vec!(Expr::Var("y".to_string()), Expr::Var("x".to_string()))
+                    )),
+                },
+            ])
         );
     }
 }

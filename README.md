@@ -1,3 +1,11 @@
+### Notes from the helpful lab TA
+// implement simply typed lambda calculus, and JIT compile that
+// first: STLC (first level, this is where you do check types) JIT compile into imperative program 
+// erase all types, then JIT compile
+
+// Syntax directed translation: directly translate 
+// Futumura projection: partial evaluation
+
 ### Tasks
 loop unrolling in bytecode
 variables, loops (jump instruction)
