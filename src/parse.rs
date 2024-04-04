@@ -37,7 +37,7 @@ fn parse() -> impl Parser<char, Vec<Expr>, Error = Simple<char>> {
             .padded();
 
         let atom = int
-            .or(expr.clone().delimited_by(just("("), just(")")))
+            .or(expr.clone().delimited_by(just('('), just(')')))
             .or(ident.debug("var").map(Expr::Var));
 
         let call = ident
@@ -45,8 +45,8 @@ fn parse() -> impl Parser<char, Vec<Expr>, Error = Simple<char>> {
             .then(
                 expr.clone()
                     .padded()
-                    .separated_by(just(","))
-                    .delimited_by(just("("), just(")"))
+                    .separated_by(just(','))
+                    .delimited_by(just('('), just(')'))
                     .debug("call_args"),
             )
             .map(|(name, args)| Expr::Call(name, args));
@@ -122,15 +122,15 @@ fn parse() -> impl Parser<char, Vec<Expr>, Error = Simple<char>> {
         .debug("var_set");
 
     let stmt_block = (var_decl.or(var_set).or(expr.clone()))
-        .separated_by(just(";"))
-        .delimited_by(just("{"), just("}"))
+        .separated_by(just(';'))
+        .delimited_by(just('{'), just('}'))
         .debug("{stmt_block}");
 
     let r#fn = text::keyword("fn")
         .ignore_then(ident.debug("fn_name"))
         .then(ident
-            .separated_by(just(","))
-            .delimited_by(just("("), just(")"))
+            .separated_by(just(','))
+            .delimited_by(just('('), just(')'))
             .padded()
             .debug("arg_names")
         )
