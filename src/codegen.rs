@@ -219,7 +219,7 @@ mod tests {
 
 	#[test]
 	fn test_codegen() {
-		let e = parse_text("fn add x y { var x = x + y; y }").unwrap();
+		let e = parse_text("fn add (x, y) { var z = x + y; z }").unwrap();
 		let bc = codegen(e);
 
 		assert_eq!(bc.chunks.len(), 1);
@@ -228,7 +228,7 @@ mod tests {
 		assert_eq!(bc.chunks[0].code[0], Op::LoadVar { idx: 0 });
 		assert_eq!(bc.chunks[0].code[1], Op::LoadVar { idx: 1 });
 		assert_eq!(bc.chunks[0].code[2], Op::Add);
-		assert_eq!(bc.chunks[0].code[3], Op::LoadVar { idx: 1 });
+		assert_eq!(bc.chunks[0].code[3], Op::LoadVar { idx: 2 });
 		assert_eq!(bc.chunks[0].code[4], Op::Return);
 	}
 }

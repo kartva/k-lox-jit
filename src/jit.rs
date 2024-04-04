@@ -1,4 +1,4 @@
-use std::{collections::HashMap, marker::PhantomPinned, pin::{self, pin, Pin}};
+use std::collections::HashMap;
 
 use crate::
     vm::{ByteCode, ByteCodeChunk, Op}
