@@ -155,7 +155,7 @@ impl CompiledBlockCache {
                 }
                 Op::Sub => {
                     two_arg_one_ret!(ops
-                        ; sub x0, x0, x1
+                        ; sub x0, x1, x0
                     );
                 }
                 Op::Mul => {
