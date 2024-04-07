@@ -12,6 +12,11 @@ pub enum Expr {
     LessThanEq(Box<Expr>, Box<Expr>),
     GreaterThenEq(Box<Expr>, Box<Expr>),
     Call(String, Vec<Expr>),
+    If {
+        cond: Box<Expr>,
+        then: Vec<Expr>,
+        r#else: Option<Vec<Expr>>,
+    },
     VarDecl {
         name: String,
         rhs: Option<Box<Expr>>,
@@ -123,18 +128,43 @@ fn parse() -> impl Parser<char, Vec<Expr>, Error = Simple<char>> {
         })
         .debug("var_set");
 
-    let stmt_block = (var_decl.or(var_set).or(expr.clone()))
-        .separated_by(delim(';'))
-        .delimited_by(delim('{'), delim('}'))
-        .debug("{stmt_block}");
+    let stmt_block = recursive(|stmt_block| {
+        let r#if = text::keyword("if")
+            .padded()
+            .debug("if")
+            .ignore_then(expr.clone().padded().delimited_by(delim('('), delim(')')))
+            .debug("if_cond")
+            .then(stmt_block.clone().padded())
+            .debug("if_then")
+            .then(
+                text::keyword("else")
+                    .padded()
+                    .ignore_then(stmt_block.clone().padded())
+                    .debug("if_else")
+                    .or_not(),
+            )
+            .map(|((cond, then), r#else)| Expr::If {
+                cond: Box::new(cond),
+                then,
+                r#else,
+            });
+
+        let stmt = r#if.or(var_decl).or(var_set).or(expr.clone());
+
+        stmt.separated_by(delim(';'))
+            .delimited_by(delim('{'), delim('}'))
+            .debug("{stmt_block}")
+    });
 
     let r#fn = text::keyword("fn")
+        .padded()
         .ignore_then(ident.debug("fn_name"))
-        .then(ident
-            .separated_by(delim(','))
-            .delimited_by(delim('('), delim(')'))
-            .padded()
-            .debug("arg_names")
+        .then(
+            ident
+                .separated_by(delim(','))
+                .delimited_by(delim('('), delim(')'))
+                .padded()
+                .debug("arg_names"),
         )
         .then(stmt_block.clone().padded())
         .map(|((name, args), body)| Expr::Fn { name, args, body })
@@ -155,7 +185,7 @@ mod tests {
 
     #[test]
     fn test_function() {
-        let src = "fn add x y { var x = x + y; x }";
+        let src = "fn add (x, y) { var x = x + y; x }";
         let (expr, err) = parse().parse_recovery_verbose(src);
         if !err.is_empty() {
             panic!("{:?}", err);
@@ -204,6 +234,30 @@ mod tests {
                     )),
                 },
             ])
+        );
+    }
+
+    #[test]
+    fn test_if_stmts() {
+        let src = "fn abs (x) { if (x < 0) { -x } else { x } }";
+        let (expr, err) = parse().parse_recovery_verbose(src);
+        if !err.is_empty() {
+            panic!("{:?}", err);
+        }
+        assert_eq!(
+            expr,
+            Some(vec![Expr::Fn {
+                name: "abs".to_string(),
+                args: vec!["x".to_string()],
+                body: vec!(Expr::If {
+                    cond: Box::new(Expr::LessThan(
+                        Box::new(Expr::Var("x".to_string())),
+                        Box::new(Expr::Num(0))
+                    )),
+                    then: vec!(Expr::Neg(Box::new(Expr::Var("x".to_string())))),
+                    r#else: Some(vec!(Expr::Var("x".to_string()))),
+                }),
+            }])
         );
     }
 }
