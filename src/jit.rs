@@ -33,7 +33,8 @@ macro_rules! two_arg_one_ret {
             $($t)*
             // store the result in the address stored in sp
             // then decrement sp by 16
-			; str x0, [sp, #-16]!
+            ; mov x1, #0 // store dummy value
+			; stp x0, x1, [sp, #-16]!
         )
     }
 }
@@ -141,7 +142,6 @@ impl CompiledBlockCache {
                 ; mov sp, x2
             );
         }
-
         let mut labels: HashMap<usize, DynamicLabel> = HashMap::new();
         for op in chunk.code.iter() {
             if let Op::JumpLabel { label_id } = op {
