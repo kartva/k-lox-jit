@@ -183,6 +183,7 @@ fn emit_fn(e: Expr, ctx: &mut CodegenCtx) {
 		ctx.start_new_block();
 		ctx.start_new_scope();
 
+		ctx.block().in_arg = args.len() as u32;
 		for arg in args {
 			ctx.alloc(arg);
 		}

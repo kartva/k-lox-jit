@@ -6,7 +6,7 @@ use clap::Parser;
 
 use log::debug;
 use lox_jit::codegen::codegen;
-use lox_jit::jit::CompiledBlockCache;
+use lox_jit::jit::{call_fn, CompiledBlockCache};
 use lox_jit::parse::parse_text;
 use simple_logger::SimpleLogger;
 
@@ -27,8 +27,10 @@ fn main() {
     let parsed = parse_text(&buf).unwrap();
     debug!("{:#?}", parsed);
     let bytecode = codegen(parsed);
+    let main_idx = (bytecode.chunks.len() - 1) as u32;
+    assert!(bytecode.chunks[main_idx as usize].in_arg == 0);
     debug!("{:#?}", bytecode);
     let mut cbc = CompiledBlockCache::new(bytecode);
-    let ret = unsafe { CompiledBlockCache::call_fn(&mut *cbc, 0, null(), 0) };
+    let ret = unsafe { call_fn(&mut *cbc, main_idx, null(), 0) };
     println!("{}", ret);
 }

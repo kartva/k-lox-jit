@@ -61,6 +61,26 @@ pub struct CompiledBlockCache {
     cache: HashMap<usize, (ExecutableBuffer, AssemblyOffset)>,
 }
 
+/// # Safety
+/// cbc must be a valid pointer and not be moved
+#[no_mangle]
+#[inline(never)]
+pub unsafe extern "C" fn call_fn(cbc: *mut CompiledBlockCache, idx: u32, argv: *const i64, _argc: u32) -> i64 {
+    let cbc_ref = unsafe { &mut *cbc };
+    let compiled = if let Some(cached_compiled) = cbc_ref.cache.get(&(idx as usize)) {
+        // check cache if requested block has already been compiled
+        cached_compiled
+    } else {
+        cbc_ref.cache.insert(idx as usize, unsafe {CompiledBlockCache::compile(cbc, idx)});
+        cbc_ref.cache.get(&(idx as usize)).unwrap()
+    };
+
+    // Safety: the ExecutableBuffer is guaranteed to be valid
+    let (exec_buf, offset) = compiled;
+    let f: extern "C" fn(*const i64) -> i64 = unsafe { std::mem::transmute(exec_buf.ptr(*offset)) };
+    f(argv)
+}
+
 impl CompiledBlockCache {
     pub fn new(bc: ByteCode) -> Box<CompiledBlockCache> {
         Box::new(CompiledBlockCache {
@@ -71,30 +91,25 @@ impl CompiledBlockCache {
 
     /// # Safety
     /// cbc must be a valid pointer and not be moved
-    pub unsafe extern "C" fn call_fn(cbc: *mut Self, idx: u32, argv: *const i64, _argc: u32) -> i64 {
-        let cbc_ref = unsafe { &mut *cbc };
-        let compiled = if let Some(cached_compiled) = cbc_ref.cache.get(&(idx as usize)) {
-            // check cache if requested block has already been compiled
-            cached_compiled
-        } else {
-            cbc_ref.cache.insert(idx as usize, unsafe {Self::compile(cbc, idx)});
-            cbc_ref.cache.get(&(idx as usize)).unwrap()
-        };
-
-        // Safety: the ExecutableBuffer is guaranteed to be valid
-        let (exec_buf, offset) = compiled;
-        let f: extern "C" fn(*const i64) -> i64 = unsafe { std::mem::transmute(exec_buf.ptr(*offset)) };
-        f(argv)
-    }
-
-    /// # Safety
-    /// cbc must be a valid pointer and not be moved
     pub unsafe fn compile(cbc: *mut Self, idx: u32) -> (ExecutableBuffer, AssemblyOffset) {
         let cbc_ref = unsafe { &*cbc };
-        debug!("Starting JIT");
+        debug!("jitting function idx {}", idx);
         let chunk = &cbc_ref.bc.chunks[idx as usize];
 
         let mut ops = aarch64::Assembler::new().unwrap();
+
+        mdynasm!(
+            ops
+            // call function call_fn
+            ; .align 8
+            ; ->call_fn:
+            ; .qword call_fn as _
+            ; .align 8
+            ; ->cbc_ptr:
+            ; .qword cbc as _
+            ; .align 8
+        );
+
         let offset = ops.offset();
 
         // Prologue: push stack frame
@@ -107,6 +122,7 @@ impl CompiledBlockCache {
                             // frame pointer acts as base pointer for current function
         );
 
+        // ARGS: x0: argv
         // push args to stack
         // x0 should contain pointer to args
         for _ in 0..chunk.in_arg {
@@ -211,18 +227,18 @@ impl CompiledBlockCache {
                     );
                 },
                 Op::Call { idx, word_argc } => {
-                    let num_args = *word_argc as usize;
-                    spill_stack_to_args(&mut ops, num_args);
                     mdynasm!(ops
-                        ; mov x0, cbc as u64
+                        // load arguments to registers
+                        ; ldr x0, ->cbc_ptr
                         ; mov w1, *idx as u64
-                        ; mov x2, sp
+                        ; mov x2, sp // argv is current stack pointer
                         ; mov x3, *word_argc as u64
-                        ; bl CompiledBlockCache::call_fn as usize // call function
+                        ; ldr x4, ->call_fn
+                        ; blr x4 // call function
+
                         ; add sp, sp, #(word_argc * 16) // pop args
                         ; str x0, [sp, #-16]! // store return value on stack
                     );
-                    spill_args_to_stack(&mut ops, num_args);
                 },
                 Op::Return => {
                     mdynasm!(ops
@@ -262,7 +278,7 @@ mod jit_tests {
         };
         let bytecode = ByteCode { chunks: vec![chunk] };
         let mut cbc = CompiledBlockCache::new(bytecode);
-        let ret = unsafe { CompiledBlockCache::call_fn(&mut *cbc, 0, null(), 0) };
+        let ret = unsafe { call_fn(&mut *cbc, 0, null(), 0) };
         assert_eq!(ret, 5);
     }
 }
