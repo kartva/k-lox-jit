@@ -14,15 +14,10 @@ pub enum Op {
 	LoadVar { idx: u32 },
 	SetVar { idx: u32 },
 	JumpLabel { label_id: usize },
-	JumpIfNotZero { label_id: usize },
+	Jump { label_id: usize },
+	JumpIfZero { label_id: usize },
 	Call { idx: u32, word_argc: u32 },
 	Return
-}
-
-#[derive(Debug)]
-pub enum Var {
-	Stack(usize),
-	Reg(usize)
 }
 
 #[derive(Debug)]

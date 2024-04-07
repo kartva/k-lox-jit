@@ -1,14 +1,23 @@
+### TODO:
+Nested scope blocks do not handle variable allocation and de-allocation properly
+
+### Notes from Mikail
+// calculate stack size
+// can take max size of blocks and preallocate memory for stack
+// think about supporting variable length stack allocation (int a[n])
+
+// declared variable reordering can be performed at end of parsing block/function
+// so declared variables are at base and VLA are on top
+// multiple VLA through storing pointers 
+
 ### Notes from the helpful lab TA
 // implement simply typed lambda calculus, and JIT compile that
 // first: STLC (first level, this is where you do check types) JIT compile into imperative program 
 // erase all types, then JIT compile
+// lifting variables out of closures for compiling basic blocks
 
 // Syntax directed translation: directly translate 
 // Futumura projection: partial evaluation
-
-### Tasks
-loop unrolling in bytecode
-variables, loops (jump instruction)
 
 # Running the example file
 ```bash
@@ -20,10 +29,10 @@ cargo run test.lox
 cargo test
 # cargo test will fail, and provide the name of the executable
 # example command:
-qemu-aarch64 -L /usr/aarch64-linux-gnu -g 1234 /home/desmond-lin-7/cs250/lox-jit/target/aarch64-unknown-linux-gnu/debug/deps/lox_jit-3d3658d22163a622 'jit::jit_tests::test_jit2' --exact --nocapture
+qemu-aarch64 -g 1234 -L /usr/aarch64-linux-gnu target/aarch64-unknown-linux-gnu/debug/lox-jit test.lox
 # the -g 1234 option will make qemu wait for gdb to connect at port 1234 before executing
 # run gdb with the executable name, and run a command to connect to the qemu instance using -ex
-gdb-multiarch -q /home/desmond-lin-7/cs250/lox-jit/target/aarch64-unknown-linux-gnu/debug/deps/lox_jit-3d3658d22163a622 -ex 'target remote :1234'
+gdb-multiarch -q --se=/home/desmond-lin-7/cs250/lox-jit/target/aarch64-unknown-linux-gnu/debug/lox-jit -ex 'set architecture aarch64' -ex 'target remote localhost:1234'
 ```
 In gdb,
 ```

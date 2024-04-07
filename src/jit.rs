@@ -219,11 +219,17 @@ impl CompiledBlockCache {
                         ; =>label
                     );
                 },
-                Op::JumpIfNotZero { label_id } => {
+                Op::Jump { label_id } => {
+                    let label = *labels.get(label_id).unwrap();
+                    mdynasm!(ops
+                        ; b =>label
+                    );
+                },
+                Op::JumpIfZero { label_id } => {
                     let label = *labels.get(label_id).unwrap();
                     mdynasm!(ops
                         ; ldr x0, [sp], #16
-                        ; cbnz x0, =>label
+                        ; cbz x0, =>label
                     );
                 },
                 Op::Call { idx, word_argc } => {

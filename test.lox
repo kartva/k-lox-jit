@@ -1,7 +1,10 @@
-fn main (a, b) {
-	var a = 2;
-	var b = 4;
-	b = 3;
+fn main () {
+	var x = 2;
+	var y = 4;
 
-	a + b	
+	if (x > y) {
+		1
+	} else {
+		2
+	}
 }

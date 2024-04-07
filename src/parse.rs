@@ -38,6 +38,7 @@ fn parse() -> impl Parser<char, Vec<Expr>, Error = Simple<char>> {
 
     let delim = |c| just(c).padded();
 
+    let mut stmt_block = Recursive::<_, _, Simple<char>>::declare();
     let expr = recursive(|expr| {
         let int = text::int(10)
             .map(|s: String| Expr::Num(s.parse().unwrap()))
@@ -58,11 +59,31 @@ fn parse() -> impl Parser<char, Vec<Expr>, Error = Simple<char>> {
             )
             .map(|(name, args)| Expr::Call(name, args));
 
+        let r#if = text::keyword("if")
+            .padded()
+            .debug("if")
+            .ignore_then(expr.clone().padded().delimited_by(delim('('), delim(')')))
+            .debug("if_cond")
+            .then(stmt_block.clone().padded())
+            .debug("if_then")
+            .then(
+                text::keyword("else")
+                    .padded()
+                    .ignore_then(stmt_block.clone().padded())
+                    .debug("if_else")
+                    .or_not(),
+            )
+            .map(|((cond, then), r#else)| Expr::If {
+                cond: Box::new(cond),
+                then,
+                r#else,
+            });
+
         let op = |c| just(c).padded();
 
         let unary = op("-")
             .repeated()
-            .then(call.or(atom))
+            .then(r#if.or(call).or(atom))
             .foldr(|_op, rhs| Expr::Neg(Box::new(rhs)));
 
         let product = unary
@@ -128,33 +149,9 @@ fn parse() -> impl Parser<char, Vec<Expr>, Error = Simple<char>> {
         })
         .debug("var_set");
 
-    let stmt_block = recursive(|stmt_block| {
-        let r#if = text::keyword("if")
-            .padded()
-            .debug("if")
-            .ignore_then(expr.clone().padded().delimited_by(delim('('), delim(')')))
-            .debug("if_cond")
-            .then(stmt_block.clone().padded())
-            .debug("if_then")
-            .then(
-                text::keyword("else")
-                    .padded()
-                    .ignore_then(stmt_block.clone().padded())
-                    .debug("if_else")
-                    .or_not(),
-            )
-            .map(|((cond, then), r#else)| Expr::If {
-                cond: Box::new(cond),
-                then,
-                r#else,
-            });
-
-        let stmt = r#if.or(var_decl).or(var_set).or(expr.clone());
-
-        stmt.separated_by(delim(';'))
+    stmt_block.define((var_decl).or(var_set).or(expr.clone()).separated_by(delim(';'))
             .delimited_by(delim('{'), delim('}'))
-            .debug("{stmt_block}")
-    });
+            .debug("{stmt_block}"));
 
     let r#fn = text::keyword("fn")
         .padded()
