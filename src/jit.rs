@@ -124,11 +124,21 @@ impl CompiledBlockCache {
 
         // ARGS: x0: argv
         // push args to stack
-        // x0 should contain pointer to args
-        for _ in 0..chunk.in_arg {
+        // x0 should contains pointer to args (in reverse order)
+        if chunk.in_arg > 0 {
             mdynasm!(ops
-                ; ldr x1, [x0], #16
-                ; str x1, [sp, #-16]!
+                ; sub sp, sp, #(16 * (chunk.in_arg + 1)) // allocate space for args
+                ; mov x2, sp // save current stack pointer
+            );
+            for _ in 0..chunk.in_arg {
+                mdynasm!(ops
+                    ; ldr x1, [x0], #16
+                    ; str x1, [sp, #16]!
+                );
+            }
+            // restore stack pointer
+            mdynasm!(ops
+                ; mov sp, x2
             );
         }
 
