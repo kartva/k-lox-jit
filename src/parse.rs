@@ -1,39 +1,65 @@
 #[derive(Debug, PartialEq, Eq)]
-pub enum Expr {
-    Neg(Box<Expr>),
+pub enum ExprTy {
+    Neg(Box<Spanned>),
     Num(i64),
     Var(String),
-    Mul(Box<Expr>, Box<Expr>),
-    Div(Box<Expr>, Box<Expr>),
-    Add(Box<Expr>, Box<Expr>),
-    Sub(Box<Expr>, Box<Expr>),
-    LessThan(Box<Expr>, Box<Expr>),
-    GreaterThan(Box<Expr>, Box<Expr>),
-    LessThanEq(Box<Expr>, Box<Expr>),
-    GreaterThenEq(Box<Expr>, Box<Expr>),
-    Call(String, Vec<Expr>),
+    Mul(Box<Spanned>, Box<Spanned>),
+    Div(Box<Spanned>, Box<Spanned>),
+    Add(Box<Spanned>, Box<Spanned>),
+    Sub(Box<Spanned>, Box<Spanned>),
+    LessThan(Box<Spanned>, Box<Spanned>),
+    GreaterThan(Box<Spanned>, Box<Spanned>),
+    LessThanEq(Box<Spanned>, Box<Spanned>),
+    GreaterThenEq(Box<Spanned>, Box<Spanned>),
+    Call(String, Vec<Spanned>),
     If {
-        cond: Box<Expr>,
-        then: Vec<Expr>,
-        r#else: Option<Vec<Expr>>,
+        cond: Box<Spanned>,
+        then: Vec<Spanned>,
+        r#else: Option<Vec<Spanned>>,
     },
     VarDecl {
         name: String,
-        rhs: Option<Box<Expr>>,
+        rhs: Option<Box<Spanned>>,
     },
     Set {
         name: String,
-        rhs: Box<Expr>,
+        rhs: Box<Spanned>,
     },
     Fn {
         name: String,
         args: Vec<String>,
-        body: Vec<Expr>,
+        body: Vec<Spanned>,
     },
 }
 
-use chumsky::{combinator::Repeated, prelude::*};
-fn parse() -> impl Parser<char, Vec<Expr>, Error = Simple<char>> {
+use std::ops::Range;
+
+#[derive(Debug)]
+pub struct Spanned<T = ExprTy>(pub T, pub Range<usize>);
+
+impl From<ExprTy> for Spanned {
+    fn from(s: ExprTy) -> Self {
+        Spanned(s, 0..0)
+    }
+}
+
+impl PartialEq for Spanned {
+    fn eq(&self, other: &Self) -> bool {
+        self.0 == other.0
+    }
+}
+
+impl Eq for Spanned {}
+
+fn create_span_from_pair(lhs: Spanned, op: fn(Box<Spanned>, Box<Spanned>) -> ExprTy, rhs: Spanned) -> Spanned {
+    let span = lhs.1.start..rhs.1.end;
+    Spanned(op(Box::new(lhs), Box::new(rhs)), span)
+}
+
+use chumsky::{combinator::Repeated, prelude::*, Span};
+
+use crate::parse_err::format_errors;
+fn parse() -> impl Parser<char, Vec<Spanned>, Error = Simple<char>> {
     let ident = text::ident().padded();
 
     let delim = |c| just(c).padded();
@@ -41,12 +67,12 @@ fn parse() -> impl Parser<char, Vec<Expr>, Error = Simple<char>> {
     let mut stmt_block = Recursive::<_, _, Simple<char>>::declare();
     let expr = recursive(|expr| {
         let int = text::int(10)
-            .map(|s: String| Expr::Num(s.parse().unwrap()))
+            .map_with_span(|s: String, span| Spanned(ExprTy::Num(s.parse().unwrap()), span))
             .padded();
 
         let atom = int
             .or(expr.clone().delimited_by(delim('('), delim(')')))
-            .or(ident.debug("var").map(Expr::Var));
+            .or(ident.debug("var").map_with_span(|atom, span| Spanned(ExprTy::Var(atom), span)));
 
         let call = ident
             .debug("call_func_name")
@@ -57,7 +83,7 @@ fn parse() -> impl Parser<char, Vec<Expr>, Error = Simple<char>> {
                     .delimited_by(delim('('), delim(')'))
                     .debug("call_args"),
             )
-            .map(|(name, args)| Expr::Call(name, args));
+            .map_with_span(|(name, args), span| Spanned(ExprTy::Call(name, args), span));
 
         let r#if = text::keyword("if")
             .padded()
@@ -73,53 +99,56 @@ fn parse() -> impl Parser<char, Vec<Expr>, Error = Simple<char>> {
                     .debug("if_else")
                     .or_not(),
             )
-            .map(|((cond, then), r#else)| Expr::If {
+            .map_with_span(|((cond, then), r#else), span| Spanned(ExprTy::If {
                 cond: Box::new(cond),
                 then,
                 r#else,
-            });
+            }, span));
 
         let op = |c| just(c).padded();
 
-        let unary = op("-")
+        let unary = op("-").map_with_span(|_, span: Range<usize>| span)
             .repeated()
             .then(r#if.or(call).or(atom))
-            .foldr(|_op, rhs| Expr::Neg(Box::new(rhs)));
+            .foldr(|neg: Range<usize>, rhs: Spanned| {
+                let span = neg.start..rhs.1.end;
+                Spanned(ExprTy::Neg(Box::new(rhs)), span)
+            });
 
         let product = unary
             .clone()
             .then(
                 op("*")
-                    .to(Expr::Mul as fn(_, _) -> _)
-                    .or(op("/").to(Expr::Div as fn(_, _) -> _))
+                    .to(ExprTy::Mul as fn(Box<Spanned>, Box<Spanned>) -> ExprTy)
+                    .or(op("/").to(ExprTy::Div as fn(_, _) -> _))
                     .then(unary)
                     .repeated(),
             )
-            .foldl(|lhs, (op, rhs)| op(Box::new(lhs), Box::new(rhs)));
+            .foldl(|lhs, (op, rhs)| create_span_from_pair(lhs, op, rhs));
 
         let sum = product
             .clone()
             .then(
                 op("+")
-                    .to(Expr::Add as fn(_, _) -> _)
-                    .or(op("-").to(Expr::Sub as fn(_, _) -> _))
+                    .to(ExprTy::Add as fn(Box<Spanned>, Box<Spanned>) -> ExprTy)
+                    .or(op("-").to(ExprTy::Sub as fn(_, _) -> _))
                     .then(product)
                     .repeated(),
             )
-            .foldl(|lhs, (op, rhs)| op(Box::new(lhs), Box::new(rhs)));
+            .foldl(|lhs, (op, rhs)| create_span_from_pair(lhs, op, rhs));
 
         let cmp = sum
             .clone()
             .then(
                 op("<")
-                    .to(Expr::LessThan as fn(_, _) -> _)
-                    .or(op(">").to(Expr::GreaterThan as fn(_, _) -> _))
-                    .or(op("<=").to(Expr::LessThanEq as fn(_, _) -> _))
-                    .or(op(">=").to(Expr::GreaterThenEq as fn(_, _) -> _))
+                    .to(ExprTy::LessThan as fn(_, _) -> _)
+                    .or(op(">").to(ExprTy::GreaterThan as fn(_, _) -> _))
+                    .or(op("<=").to(ExprTy::LessThanEq as fn(_, _) -> _))
+                    .or(op(">=").to(ExprTy::GreaterThenEq as fn(_, _) -> _))
                     .then(sum)
                     .repeated(),
             )
-            .foldl(|lhs, (op, rhs)| op(Box::new(lhs), Box::new(rhs)));
+            .foldl(|lhs, (op, rhs)| create_span_from_pair(lhs, op, rhs));
 
         cmp
     })
@@ -133,20 +162,20 @@ fn parse() -> impl Parser<char, Vec<Expr>, Error = Simple<char>> {
                 .ignore_then(expr.clone().debug("var_rhs"))
                 .or_not(),
         )
-        .map(|(name, rhs)| Expr::VarDecl {
+        .map_with_span(|(name, rhs), span| Spanned(ExprTy::VarDecl {
             name,
             rhs: rhs.map(Box::new),
-        })
+        }, span))
         .debug("var_decl");
 
     let var_set = ident
         .debug("var_name")
         .then_ignore(delim('='))
         .then(expr.clone().debug("var_rhs"))
-        .map(|(name, rhs)| Expr::Set {
+        .map_with_span(|(name, rhs), span| Spanned(ExprTy::Set {
             name,
             rhs: Box::new(rhs),
-        })
+        }, span))
         .debug("var_set");
 
     stmt_block.define((var_decl).or(var_set).or(expr.clone()).separated_by(delim(';'))
@@ -164,7 +193,7 @@ fn parse() -> impl Parser<char, Vec<Expr>, Error = Simple<char>> {
                 .debug("arg_names"),
         )
         .then(stmt_block.clone().padded())
-        .map(|((name, args), body)| Expr::Fn { name, args, body })
+        .map_with_span(|((name, args), body), span| Spanned(ExprTy::Fn { name, args, body }, span))
         .debug("fn");
 
     let fns = Repeated::at_least(r#fn.padded().repeated(), 1);
@@ -172,8 +201,8 @@ fn parse() -> impl Parser<char, Vec<Expr>, Error = Simple<char>> {
     fns.then_ignore(end())
 }
 
-pub fn parse_text(src: &str) -> Result<Vec<Expr>, Vec<Simple<char>>> {
-    parse().parse(src)
+pub fn parse_text(src: &str) -> Vec<Spanned> {
+    parse().parse(src).unwrap_or_else(|errs| panic!("{}", format_errors(src, errs))) 
 }
 
 #[cfg(test)]
@@ -189,20 +218,20 @@ mod tests {
         }
         assert_eq!(
             expr,
-            Some(vec![Expr::Fn {
+            Some(vec![ExprTy::Fn {
                 name: "add".to_string(),
                 args: vec!["x".to_string(), "y".to_string()],
-                body: vec!(
-                    Expr::VarDecl {
+                body: vec![
+                    ExprTy::VarDecl {
                         name: "x".to_string(),
-                        rhs: Some(Box::new(Expr::Add(
-                            Box::new(Expr::Var("x".to_string())),
-                            Box::new(Expr::Var("y".to_string()))
-                        ))),
-                    },
-                    Expr::Var("x".to_string())
-                ),
-            }])
+                        rhs: Some(Box::new(ExprTy::Add(
+                            Box::new(ExprTy::Var("x".to_string()).into()),
+                            Box::new(ExprTy::Var("y".to_string()).into())
+                        ).into())),
+                    }.into(),
+                    ExprTy::Var("x".to_string()).into()
+                ],
+            }.into()])
         );
     }
 
@@ -217,19 +246,19 @@ mod tests {
         assert_eq!(
             expr,
             Some(vec![
-                Expr::Fn {
+                ExprTy::Fn {
                     name: "fst".to_string(),
                     args: vec!["x".to_string(), "y".to_string()],
-                    body: vec!(Expr::Var("x".to_string())),
-                },
-                Expr::Fn {
+                    body: vec!(ExprTy::Var("x".to_string()).into()),
+                }.into(),
+                ExprTy::Fn {
                     name: "sec".to_string(),
                     args: vec!["x".to_string(), "y".to_string()],
-                    body: vec!(Expr::Call(
+                    body: vec!(ExprTy::Call(
                         "fst".to_string(),
-                        vec!(Expr::Var("y".to_string()), Expr::Var("x".to_string()))
-                    )),
-                },
+                        vec!(ExprTy::Var("y".to_string()).into(), ExprTy::Var("x".to_string()).into())
+                    ).into()),
+                }.into(),
             ])
         );
     }
@@ -243,18 +272,18 @@ mod tests {
         }
         assert_eq!(
             expr,
-            Some(vec![Expr::Fn {
+            Some(vec![ExprTy::Fn {
                 name: "abs".to_string(),
                 args: vec!["x".to_string()],
-                body: vec!(Expr::If {
-                    cond: Box::new(Expr::LessThan(
-                        Box::new(Expr::Var("x".to_string())),
-                        Box::new(Expr::Num(0))
-                    )),
-                    then: vec!(Expr::Neg(Box::new(Expr::Var("x".to_string())))),
-                    r#else: Some(vec!(Expr::Var("x".to_string()))),
-                }),
-            }])
+                body: vec!(ExprTy::If {
+                    cond: Box::new(ExprTy::LessThan(
+                        Box::new(ExprTy::Var("x".to_string()).into()),
+                        Box::new(ExprTy::Num(0).into())
+                    ).into()),
+                    then: vec!(ExprTy::Neg(Box::new(ExprTy::Var("x".to_string()).into())).into()),
+                    r#else: Some(vec!(ExprTy::Var("x".to_string()).into())),
+                }.into()),
+            }.into()])
         );
     }
 }

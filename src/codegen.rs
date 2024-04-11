@@ -1,6 +1,6 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, result};
 
-use crate::{parse::Expr, vm::{ByteCode, ByteCodeChunk, Op}};
+use crate::{parse::{ExprTy, Spanned}, vm::{ByteCode, ByteCodeChunk, Op}};
 
 #[derive(Debug, Clone, Copy)]
 struct StackIdx(u32);
@@ -116,63 +116,63 @@ impl CodegenCtx {
 	}
 }
 
-fn emit_expr(e: &Expr, ctx: &mut CodegenCtx) {
+fn emit_expr(Spanned(e, _): &Spanned, ctx: &mut CodegenCtx) {
 	match e {
-		Expr::Num(n) => {
+		ExprTy::Num(n) => {
 			ctx.block().push(Op::Constant { val: *n });
 		},
-		Expr::Add(lhs, rhs) => {
+		ExprTy::Add(lhs, rhs) => {
 			emit_expr(lhs, ctx);
 			emit_expr(rhs, ctx);
 			ctx.block().push(Op::Add);
 		},
-		Expr::Sub(lhs, rhs) => {
+		ExprTy::Sub(lhs, rhs) => {
 			emit_expr(lhs, ctx);
 			emit_expr(rhs, ctx);
 			ctx.block().push(Op::Sub);
 		},
-		Expr::Mul(lhs, rhs) => {
+		ExprTy::Mul(lhs, rhs) => {
 			emit_expr(lhs, ctx);
 			emit_expr(rhs, ctx);
 			ctx.block().push(Op::Mul);
 		},
-		Expr::Div(lhs, rhs) => {
+		ExprTy::Div(lhs, rhs) => {
 			emit_expr(lhs, ctx);
 			emit_expr(rhs, ctx);
 			ctx.block().push(Op::Div);
 		},
-		Expr::Var(name) => {
+		ExprTy::Var(name) => {
 			let reg = ctx.get(name.as_str()).expect("Variable not found");
 			ctx.block().push(Op::LoadVar { idx: reg.0 });
 		},
-		Expr::LessThan(lhs, rhs) => {
+		ExprTy::LessThan(lhs, rhs) => {
 			emit_expr(lhs, ctx);
 			emit_expr(rhs, ctx);
 			ctx.block().push(Op::LessThan);
 		},
-		Expr::GreaterThan(lhs, rhs) => {
+		ExprTy::GreaterThan(lhs, rhs) => {
 			emit_expr(lhs, ctx);
 			emit_expr(rhs, ctx);
 			ctx.block().push(Op::GreaterThan);
 		},
-		Expr::LessThanEq(lhs, rhs) => {
+		ExprTy::LessThanEq(lhs, rhs) => {
 			emit_expr(lhs, ctx);
 			emit_expr(rhs, ctx);
 			ctx.block().push(Op::LessThanEq);
 		},
-		Expr::GreaterThenEq(lhs, rhs) => {
+		ExprTy::GreaterThenEq(lhs, rhs) => {
 			emit_expr(lhs, ctx);
 			emit_expr(rhs, ctx);
 			ctx.block().push(Op::GreaterThanEq);
 		},
-		Expr::Call(name, args) => {
+		ExprTy::Call(name, args) => {
 			for arg in args {
 				emit_expr(arg, ctx);
 			}
-			let call = Op::Call { idx: ctx.get_fn(name).unwrap().0, word_argc: args.len() as u32 };
+			let call = Op::Call { idx: ctx.get_fn(name).unwrap_or_else(|| panic!("Undeclared function {}", name)).0, word_argc: args.len() as u32 };
 			ctx.block().push(call);
 		},
-		Expr::If { cond, then, r#else } => {
+		ExprTy::If { cond, then, r#else } => {
 			emit_expr(cond, ctx);
 			let if_lbl = ctx.alloc_label();
 			ctx.block().push(Op::JumpIfZero { label_id: if_lbl });
@@ -202,9 +202,10 @@ fn emit_expr(e: &Expr, ctx: &mut CodegenCtx) {
 	}
 }
 
-fn emit_stmt(e: &Expr, ctx: &mut CodegenCtx) {
+fn emit_stmt(node: &Spanned, ctx: &mut CodegenCtx) {
+	let Spanned(e, _) = node;
 	match e {
-		Expr::VarDecl { name, rhs } => {
+		ExprTy::VarDecl { name, rhs } => {
 			if let Some(rhs) = rhs {
 				emit_expr(rhs, ctx);
 			} else {
@@ -213,20 +214,20 @@ fn emit_stmt(e: &Expr, ctx: &mut CodegenCtx) {
 			}
 			ctx.alloc(name.clone()); // emit_expr pushes result on stack
 		},
-		Expr::Set { name, rhs } => {
+		ExprTy::Set { name, rhs } => {
 			emit_expr(rhs, ctx);
 			let reg = ctx.get(name.as_str()).expect("Variable not found");
 			ctx.block().push(Op::SetVar { idx: reg.0 });
 			ctx.block().push(Op::Pop);
 		},
 		_ => {
-			emit_expr(e, ctx);
+			emit_expr(node, ctx);
 			ctx.block().push(Op::Pop);
 		}
 	}
 }
 
-fn emit_stmt_block(body: &[Expr], ctx: &mut CodegenCtx) {
+fn emit_stmt_block(body: &[Spanned], ctx: &mut CodegenCtx) {
 	let ret = body.last().expect("Expected return statement");
 	for stmt in &body[..(body.len() - 1)] {
 		emit_stmt(stmt, ctx);
@@ -235,8 +236,8 @@ fn emit_stmt_block(body: &[Expr], ctx: &mut CodegenCtx) {
 	emit_expr(ret, ctx);
 }
 
-fn emit_fn(e: Expr, ctx: &mut CodegenCtx) {
-	if let Expr::Fn { name, args, body } = e {
+fn emit_fn(Spanned(e, _span): Spanned, ctx: &mut CodegenCtx) {
+	if let ExprTy::Fn { name, args, body } = e {
 		let fn_idx = ctx.alloc_fn(name.clone());
 		ctx.start_new_block();
 		ctx.start_new_scope();
@@ -250,13 +251,12 @@ fn emit_fn(e: Expr, ctx: &mut CodegenCtx) {
 
 		ctx.finish_scope();
 		ctx.block().push(Op::Return);
-		ctx.finish_scope();
 	} else {
 		panic!("Expected function expression, found {e:?}");
 	}
 }
 
-pub fn codegen(e: Vec<Expr>) -> ByteCode {
+pub fn codegen(e: Vec<Spanned>) -> ByteCode {
 	let mut ctx = CodegenCtx::new();
 
 	ctx.start_new_scope();

@@ -16,6 +16,17 @@ struct Args {
     file: PathBuf
 }
 
+fn run_last_fn (src: &str) -> i64 {
+    let parsed = parse_text(src);
+    debug!("{:#?}", parsed);
+    let bytecode = codegen(parsed);
+    let main_idx = (bytecode.chunks.len() - 1) as u32;
+    assert!(bytecode.chunks[main_idx as usize].in_arg == 0);
+    debug!("{:#?}", bytecode);
+    let mut cbc = CompiledBlockCache::new(bytecode);
+    unsafe { call_fn(&mut *cbc, main_idx, null(), 0) }    
+}
+
 fn main() {
     SimpleLogger::new().init().unwrap();
     let args = Args::parse();
@@ -24,13 +35,16 @@ fn main() {
     
     File::open(args.file).unwrap().read_to_string(&mut buf).unwrap();
 
-    let parsed = parse_text(&buf).unwrap();
-    debug!("{:#?}", parsed);
-    let bytecode = codegen(parsed);
-    let main_idx = (bytecode.chunks.len() - 1) as u32;
-    assert!(bytecode.chunks[main_idx as usize].in_arg == 0);
-    debug!("{:#?}", bytecode);
-    let mut cbc = CompiledBlockCache::new(bytecode);
-    let ret = unsafe { call_fn(&mut *cbc, main_idx, null(), 0) };
+    let ret = run_last_fn(&buf);
     println!("{}", ret);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_main() {
+        assert_eq!(run_last_fn("fn main() { 42 }"), 42);
+    }
 }
