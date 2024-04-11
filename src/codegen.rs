@@ -10,7 +10,15 @@ struct StackIdx(u32);
 struct FuncIdx(u32);
 
 #[derive(Debug, Default)]
+enum ScopeTy {
+	#[default]
+	None,
+	While { end_label: usize},
+}
+
+#[derive(Debug, Default)]
 struct Scope {
+	ty: ScopeTy,
 	start_idx: u32,
 	vars: HashMap<String, StackIdx>,
 	fns: HashMap<String, FuncIdx>
@@ -18,7 +26,12 @@ struct Scope {
 
 impl Scope {
 	fn new(parent_scope: Option<&Scope>) -> Self {
+		Scope::new_with_type(parent_scope, ScopeTy::None)
+	}
+
+	fn new_with_type(parent_scope: Option<&Scope>, ty: ScopeTy) -> Self {
 		Scope {
+			ty,
 			start_idx: parent_scope.map(|p| p.start_idx + p.vars.len() as u32).unwrap_or(0),
 			..Default::default()
 		}
@@ -89,6 +102,10 @@ impl CodegenCtx {
 
 	fn start_new_scope(&mut self) {
 		self.scopes.push(Scope::new(self.scopes.last()));
+	}
+
+	fn start_new_scope_with_type(&mut self, ty: ScopeTy) {
+		self.scopes.push(Scope::new_with_type(self.scopes.last(), ty));
 	}
 
 	fn start_new_block(&mut self) {
@@ -180,7 +197,7 @@ fn emit_expr(Spanned(e, span): &Spanned, ctx: &mut CodegenCtx) {
 			emit_expr(rhs, ctx);
 			ctx.block().push(Op::LessThanEq);
 		},
-		ExprTy::GreaterThenEq(lhs, rhs) => {
+		ExprTy::GreaterThanEq(lhs, rhs) => {
 			emit_expr(lhs, ctx);
 			emit_expr(rhs, ctx);
 			ctx.block().push(Op::GreaterThanEq);
@@ -236,7 +253,7 @@ fn emit_expr(Spanned(e, span): &Spanned, ctx: &mut CodegenCtx) {
 }
 
 fn emit_stmt(node: &Spanned, ctx: &mut CodegenCtx) {
-	let Spanned(e, _) = node;
+	let Spanned(e, span) = node;
 	match e {
 		ExprTy::VarDecl { name, rhs } => {
 			if let Some(rhs) = rhs {
@@ -253,6 +270,42 @@ fn emit_stmt(node: &Spanned, ctx: &mut CodegenCtx) {
 			ctx.block().push(Op::SetVar { stack_idx: reg.0 });
 			ctx.block().push(Op::Pop);
 		},
+		ExprTy::While { cond, body } => {
+			let start_label = ctx.alloc_label();
+			let end_label = ctx.alloc_label();
+
+			ctx.block().push(Op::JumpLabel { label_id: start_label });
+			emit_expr(cond, ctx);
+			ctx.block().push(Op::JumpIfZero { label_id: end_label });
+
+			ctx.start_new_scope_with_type(ScopeTy::While { end_label });
+			emit_stmt_block(body.as_slice(), ctx);
+			ctx.finish_scope();
+
+			ctx.block().push(Op::Jump { label_id: start_label });
+			ctx.block().push(Op::JumpLabel { label_id: end_label });
+		},
+		ExprTy::Break => {
+			let while_scope = ctx.scopes.iter().rev().find(|s| matches!(s.ty, ScopeTy::While { .. }));
+			match while_scope {
+				Some (Scope {ty: ScopeTy::While { end_label }, .. }) => {
+					let jmp = Op::Jump { label_id: *end_label };
+					ctx.block().push(jmp);
+				},
+				_ => {
+					ctx.register_new_report(Report::build(ReportKind::Error, (), span.start)
+						.with_message("Break statement outside of loop")
+						.with_label(Label::new(span.clone())
+							.with_message("Break statement outside of loop")
+							.with_color(Color::Red))
+						.finish());
+				}
+			}
+		},
+		ExprTy::Return { expr } => {
+			emit_expr(expr, ctx);
+			ctx.block().push(Op::Return);
+		},
 		_ => {
 			emit_expr(node, ctx);
 			ctx.block().push(Op::Pop);
@@ -261,12 +314,9 @@ fn emit_stmt(node: &Spanned, ctx: &mut CodegenCtx) {
 }
 
 fn emit_stmt_block(body: &[Spanned], ctx: &mut CodegenCtx) {
-	let ret = body.last().expect("Expected return statement");
-	for stmt in &body[..(body.len() - 1)] {
+	for stmt in body {
 		emit_stmt(stmt, ctx);
 	}
-
-	emit_expr(ret, ctx);
 }
 
 fn emit_fn(Spanned(e, span): Spanned, ctx: &mut CodegenCtx) {
@@ -283,6 +333,9 @@ fn emit_fn(Spanned(e, span): Spanned, ctx: &mut CodegenCtx) {
 		emit_stmt_block(body.as_slice(), ctx);
 
 		ctx.finish_scope();
+
+		// push null value in case return hasn't happened already.
+		ctx.block().push(Op::Constant { val: 0 });
 		ctx.block().push(Op::Return);
 	} else {
 		let error_report = Report::build(ReportKind::Error, (), span.start)

@@ -10,13 +10,21 @@ pub enum ExprTy {
     LessThan(Box<Spanned>, Box<Spanned>),
     GreaterThan(Box<Spanned>, Box<Spanned>),
     LessThanEq(Box<Spanned>, Box<Spanned>),
-    GreaterThenEq(Box<Spanned>, Box<Spanned>),
+    GreaterThanEq(Box<Spanned>, Box<Spanned>),
     Call(String, Vec<Spanned>),
+    Return {
+        expr: Box<Spanned>,
+    },
     If {
         cond: Box<Spanned>,
         then: Vec<Spanned>,
         r#else: Option<Vec<Spanned>>,
     },
+    While {
+        cond: Box<Spanned>,
+        body: Vec<Spanned>,
+    },
+    Break,
     VarDecl {
         name: String,
         rhs: Option<Box<Spanned>>,
@@ -43,6 +51,12 @@ impl From<ExprTy> for Spanned {
     }
 }
 
+impl From<ExprTy> for Box<Spanned> {
+    fn from(s: ExprTy) -> Self {
+        Box::new(Spanned(s, 0..0))
+    }
+}
+
 impl PartialEq for Spanned {
     fn eq(&self, other: &Self) -> bool {
         self.0 == other.0
@@ -60,7 +74,7 @@ use chumsky::{combinator::Repeated, prelude::*, Span};
 
 use crate::error::format_parse_errors;
 fn parse() -> impl Parser<char, Vec<Spanned>, Error = Simple<char>> {
-    let ident = text::ident().padded();
+    let ident = text::ident().padded().labelled("ident");
 
     let delim = |c| just(c).padded();
 
@@ -87,7 +101,6 @@ fn parse() -> impl Parser<char, Vec<Spanned>, Error = Simple<char>> {
 
         let r#if = text::keyword("if")
             .padded()
-            .debug("if")
             .ignore_then(expr.clone().padded().delimited_by(delim('('), delim(')')))
             .debug("if_cond")
             .then(stmt_block.clone().padded())
@@ -140,11 +153,10 @@ fn parse() -> impl Parser<char, Vec<Spanned>, Error = Simple<char>> {
         let cmp = sum
             .clone()
             .then(
-                op("<")
-                    .to(ExprTy::LessThan as fn(_, _) -> _)
+                op("<=").to(ExprTy::LessThanEq as fn(_, _) -> _)
+                    .or(op(">=").to(ExprTy::GreaterThanEq as fn(_, _) -> _))
                     .or(op(">").to(ExprTy::GreaterThan as fn(_, _) -> _))
-                    .or(op("<=").to(ExprTy::LessThanEq as fn(_, _) -> _))
-                    .or(op(">=").to(ExprTy::GreaterThenEq as fn(_, _) -> _))
+                    .or(op("<").to(ExprTy::LessThan as fn(_, _) -> _))
                     .then(sum)
                     .repeated(),
             )
@@ -152,7 +164,7 @@ fn parse() -> impl Parser<char, Vec<Spanned>, Error = Simple<char>> {
 
         cmp
     })
-    .debug("expr");
+    .debug("expr").labelled("expr");
 
     let var_decl = text::keyword("var")
         .padded()
@@ -166,7 +178,7 @@ fn parse() -> impl Parser<char, Vec<Spanned>, Error = Simple<char>> {
             name,
             rhs: rhs.map(Box::new),
         }, span))
-        .debug("var_decl");
+        .debug("var_decl").labelled("var_decl");
 
     let var_set = ident
         .debug("var_name")
@@ -176,11 +188,37 @@ fn parse() -> impl Parser<char, Vec<Spanned>, Error = Simple<char>> {
             name,
             rhs: Box::new(rhs),
         }, span))
-        .debug("var_set");
+        .debug("var_set").labelled("var_set");
 
-    stmt_block.define((var_decl).or(var_set).or(expr.clone()).separated_by(delim(';'))
-            .delimited_by(delim('{'), delim('}'))
-            .debug("{stmt_block}"));
+    let r#return = text::keyword("return")
+        .padded()
+        .ignore_then(expr.clone().padded())
+        .debug("return")
+        .map_with_span(|expr, span| Spanned(ExprTy::Return {
+            expr: Box::new(expr),
+        }, span));
+
+    let r#while = text::keyword("while")
+        .padded()
+        .ignore_then(expr.clone().padded().delimited_by(delim('('), delim(')')))
+        .debug("while_cond")
+        .then(stmt_block.clone().padded())
+        .debug("while_body")
+        .map_with_span(|(cond, body), span| Spanned(ExprTy::While {
+            cond: Box::new(cond),
+            body,
+        }, span));
+
+    stmt_block.define(
+        Repeated::at_least(
+            r#return.or(r#while).or(var_decl).or(var_set).or(expr.clone())
+                .then_ignore(delim(';'))
+                .repeated(),
+                1
+            )
+        .delimited_by(delim('{'), delim('}'))
+        .debug("{stmt_block}")
+    );
 
     let r#fn = text::keyword("fn")
         .padded()
@@ -211,7 +249,7 @@ mod tests {
 
     #[test]
     fn test_function() {
-        let src = "fn add (x, y) { var x = x + y; x }";
+        let src = "fn add (x, y) { var x = x + y; return x; }";
         let (expr, err) = parse().parse_recovery_verbose(src);
         if !err.is_empty() {
             panic!("{:?}", err);
@@ -229,7 +267,9 @@ mod tests {
                             Box::new(ExprTy::Var("y".to_string()).into())
                         ).into())),
                     }.into(),
-                    ExprTy::Var("x".to_string()).into()
+                    ExprTy::Return {
+                        expr: Box::new(ExprTy::Var("x".to_string()).into())
+                    }.into()
                 ],
             }.into()])
         );
@@ -237,8 +277,8 @@ mod tests {
 
     #[test]
     fn test_functions_call() {
-        let src = "fn fst (x, y) { x }
-                   fn sec (x, y) { fst (y, x) }";
+        let src = "fn fst (x, y) { return x; }
+                   fn sec (x, y) { return fst (y, x); }";
         let (expr, err) = parse().parse_recovery_verbose(src);
         if !err.is_empty() {
             panic!("{:?}", err);
@@ -249,15 +289,19 @@ mod tests {
                 ExprTy::Fn {
                     name: "fst".to_string(),
                     args: vec!["x".to_string(), "y".to_string()],
-                    body: vec!(ExprTy::Var("x".to_string()).into()),
+                    body: vec![ExprTy::Return { expr: ExprTy::Var("x".to_string()).into() }.into()],
                 }.into(),
                 ExprTy::Fn {
                     name: "sec".to_string(),
                     args: vec!["x".to_string(), "y".to_string()],
-                    body: vec!(ExprTy::Call(
-                        "fst".to_string(),
-                        vec!(ExprTy::Var("y".to_string()).into(), ExprTy::Var("x".to_string()).into())
-                    ).into()),
+                    body: vec![
+                        ExprTy::Return {
+                            expr: ExprTy::Call(
+                                "fst".to_string(),
+                                vec![ExprTy::Var("y".to_string()).into(), ExprTy::Var("x".to_string()).into()]
+                            ).into()
+                        }.into()
+                    ],
                 }.into(),
             ])
         );
@@ -265,7 +309,7 @@ mod tests {
 
     #[test]
     fn test_if_stmts() {
-        let src = "fn abs (x) { if (x < 0) { -x } else { x } }";
+        let src = "fn abs (x) { if (x < 0) { return -x; } else { return x; }; }";
         let (expr, err) = parse().parse_recovery_verbose(src);
         if !err.is_empty() {
             panic!("{:?}", err);
@@ -276,14 +320,63 @@ mod tests {
                 name: "abs".to_string(),
                 args: vec!["x".to_string()],
                 body: vec!(ExprTy::If {
-                    cond: Box::new(ExprTy::LessThan(
-                        Box::new(ExprTy::Var("x".to_string()).into()),
-                        Box::new(ExprTy::Num(0).into())
-                    ).into()),
-                    then: vec!(ExprTy::Neg(Box::new(ExprTy::Var("x".to_string()).into())).into()),
-                    r#else: Some(vec!(ExprTy::Var("x".to_string()).into())),
+                    cond: ExprTy::LessThan(
+                        ExprTy::Var("x".to_string()).into(),
+                        ExprTy::Num(0).into()
+                    ).into(),
+                    then: vec![ExprTy::Return { expr: ExprTy::Neg(ExprTy::Var("x".to_string()).into()).into() }.into()],
+                    r#else: Some(vec![ExprTy::Return { expr:ExprTy::Var("x".to_string()).into() }.into() ]),
                 }.into()),
             }.into()])
         );
+    }
+
+    #[test]
+    fn test_while_stmts() {
+        let src = "fn fact (n) { var acc = 1; var i = 1; while (i <= n) { acc = acc * i; i = i + 1; }; return acc; }";
+        let (expr, err) = parse().parse_recovery_verbose(src);
+        if !err.is_empty() {
+            panic!("{:?}", err);
+        }
+        assert_eq!(
+            expr,
+            Some(vec![ExprTy::Fn {
+                name: "fact".to_string(),
+                args: vec!["n".to_string()],
+                body: vec![
+                    ExprTy::VarDecl {
+                        name: "acc".to_string(),
+                        rhs: Some(ExprTy::Num(1).into()),
+                    }.into(),
+                    ExprTy::VarDecl {
+                        name: "i".to_string(),
+                        rhs: Some(ExprTy::Num(1).into()),
+                    }.into(),
+                    ExprTy::While {
+                        cond: ExprTy::LessThanEq(
+                            ExprTy::Var("i".to_string()).into(),
+                            ExprTy::Var("n".to_string()).into()
+                        ).into(),
+                        body: vec![
+                            ExprTy::Set {
+                                name: "acc".to_string(),
+                                rhs: Box::new(ExprTy::Mul(
+                                    ExprTy::Var("acc".to_string()).into(),
+                                    ExprTy::Var("i".to_string()).into()
+                                ).into()),
+                            }.into(),
+                            ExprTy::Set {
+                                name: "i".to_string(),
+                                rhs: Box::new(ExprTy::Add(
+                                    ExprTy::Var("i".to_string()).into(),
+                                    ExprTy::Num(1).into()
+                                ).into()),
+                            }.into(),
+                        ],
+                    }.into(),
+                    ExprTy::Return { expr: ExprTy::Var("acc".to_string()).into() }.into(),
+                ],
+            }.into()])
+        )
     }
 }

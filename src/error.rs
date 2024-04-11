@@ -74,13 +74,19 @@ pub fn format_parse_errors(src: &str, errors: Vec<Simple<char>>) -> String {
                     if e.expected().len() == 0 {
                         "end of input".to_string()
                     } else {
-                        e.expected()
+                        let expected_chars = e.expected()
                             .map(|expected| match expected {
                                 Some(expected) => expected.to_string(),
                                 None => "end of input".to_string(),
                             })
                             .collect::<Vec<_>>()
-                            .join(", ")
+                            .join(", ");
+
+                        match e.label() {
+                            Some(label) => format!("{}: {}", label, expected_chars),
+                            None => expected_chars,
+                        }
+                        
                     }
                 ))
                 .with_label(
