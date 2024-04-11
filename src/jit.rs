@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, ops::Range};
 
 use crate::
     vm::{ByteCode, ByteCodeChunk, Op}
@@ -33,8 +33,7 @@ macro_rules! two_arg_one_ret {
             $($t)*
             // store the result in the address stored in sp
             // then decrement sp by 16
-            ; mov x1, #0 // store dummy value
-			; stp x0, x1, [sp, #-16]!
+			; str x0, [sp, #-16]!
         )
     }
 }
@@ -74,20 +73,23 @@ pub struct CompiledBlockCache {
 /// cbc must be a valid pointer and not be moved
 #[no_mangle]
 #[inline(never)]
-pub unsafe extern "C" fn call_fn(cbc: *mut CompiledBlockCache, idx: u32, argv: *const i64, _argc: u32) -> i64 {
+pub unsafe extern "C" fn call_fn(cbc: *mut CompiledBlockCache, function_idx: u32, argv: *const i64, _argc: u32) -> i64 {
     let cbc_ref = unsafe { &mut *cbc };
-    let compiled = if let Some(cached_compiled) = cbc_ref.cache.get(&(idx as usize)) {
+    let compiled = if let Some(cached_compiled) = cbc_ref.cache.get(&(function_idx as usize)) {
         // check cache if requested block has already been compiled
         cached_compiled
     } else {
-        cbc_ref.cache.insert(idx as usize, unsafe {CompiledBlockCache::compile(cbc, idx)});
-        cbc_ref.cache.get(&(idx as usize)).unwrap()
+        cbc_ref.cache.insert(function_idx as usize, unsafe {CompiledBlockCache::compile(cbc, function_idx)});
+        cbc_ref.cache.get(&(function_idx as usize)).unwrap()
     };
 
     // Safety: the ExecutableBuffer is guaranteed to be valid
     let (exec_buf, offset) = compiled;
     let f: extern "C" fn(*const i64) -> i64 = unsafe { std::mem::transmute(exec_buf.ptr(*offset)) };
-    f(argv)
+
+    let ret = f(argv);
+    debug!("return value of function_idx {function_idx}: {ret}");
+    ret
 }
 
 impl CompiledBlockCache {
@@ -157,12 +159,13 @@ impl CompiledBlockCache {
                 labels.insert(*label_id, label);
             }
         }
+
         for op in &chunk.code {
             match op {
                 Op::Constant { val } => {
                     let num = *val;
                     mdynasm!(ops
-                        ; mov x0, num as u64
+                        ; mov x0, num as _
                         ; str x0, [sp, #-16]!
                     );
                 }
