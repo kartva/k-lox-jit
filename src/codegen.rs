@@ -60,7 +60,7 @@ impl CodegenCtx {
 		new_label
 	}
 
-	/// Function code blocks are allocated on a global level
+	/// Function block indices are allocated on a global level
 	fn alloc_fn(&mut self, name: String) -> FuncIdx {
 		let idx = FuncIdx(self.chunks.len() as u32);
 		self.scope().fns.insert(name, idx);
@@ -93,7 +93,19 @@ impl CodegenCtx {
 		self.chunks.push(ByteCodeChunk::default());
 	}
 
+	/// Finish the current scope and pop all variables
+	/// and push the result of the scope (topmost stack value) to the stack
 	fn finish_scope(&mut self) {
+		if !self.scope().vars.is_empty() {
+			let result_set = Op::SetVar { idx: self.scope().start_idx };
+			self.block().push(result_set);
+		
+			// pop used variables
+			for _ in 0..self.scope().vars.len() {
+				self.block().push(Op::Pop);
+			}
+		}
+	
 		self.scopes.pop().unwrap();
 	}
 
@@ -165,14 +177,18 @@ fn emit_expr(e: &Expr, ctx: &mut CodegenCtx) {
 			let if_lbl = ctx.alloc_label();
 			ctx.block().push(Op::JumpIfZero { label_id: if_lbl });
 
+			ctx.start_new_scope();
 			emit_stmt_block(then.as_slice(), ctx);
+			ctx.finish_scope();
 
 			if let Some(r#else) = r#else {
 				let else_lbl = ctx.alloc_label();
 				ctx.block().push(Op::Jump { label_id: else_lbl });
 				ctx.block().push(Op::JumpLabel { label_id: if_lbl });
 
+				ctx.start_new_scope();
 				emit_stmt_block(r#else.as_slice(), ctx);
+				ctx.finish_scope();
 
 				ctx.block().push(Op::JumpLabel { label_id: else_lbl });
 			} else {
@@ -232,6 +248,7 @@ fn emit_fn(e: Expr, ctx: &mut CodegenCtx) {
 
 		emit_stmt_block(body.as_slice(), ctx);
 
+		ctx.finish_scope();
 		ctx.block().push(Op::Return);
 		ctx.finish_scope();
 	} else {
@@ -258,34 +275,41 @@ mod tests {
 
 	#[test]
 	fn test_codegen() {
-		let e = parse_text("fn add (x, y) { var z = x + y; z }").unwrap();
+		let e = parse_text("fn add (x, y) { var z = x + y; z }");
 		let bc = codegen(e);
 
 		assert_eq!(bc.chunks.len(), 1);
-		eprintln!("{:?}", bc.chunks[0].code);
-		assert_eq!(bc.chunks[0].code.len(), 5);
-		assert_eq!(bc.chunks[0].code[0], Op::LoadVar { idx: 0 });
-		assert_eq!(bc.chunks[0].code[1], Op::LoadVar { idx: 1 });
-		assert_eq!(bc.chunks[0].code[2], Op::Add);
-		assert_eq!(bc.chunks[0].code[3], Op::LoadVar { idx: 2 });
-		assert_eq!(bc.chunks[0].code[4], Op::Return);
+		eprintln!("{:?}", bc.chunks[0].code); 
+		assert_eq!(bc.chunks[0].code, [
+			Op::LoadVar { idx: 0 },
+			Op::LoadVar { idx: 1 },
+			Op::Add,
+			Op::LoadVar { idx: 2 },
+			Op::SetVar { idx: 0 }, 
+			Op::Pop, // pop z
+			Op::Pop, // pop y
+			Op::Pop, // pop x
+			Op::Return
+		]);
 	}
 
 	#[test]
 	fn test_if_codegen() {
-		let e = parse_text("fn test (x) { if (x) { x } else { 3 } }").unwrap();
+		let e = parse_text("fn test (x) { if (x) { x } else { 3 } }");
 		let bc = codegen(e);
 
 		assert_eq!(bc.chunks.len(), 1);
-		eprintln!("{:?}", bc.chunks[0].code);
-		assert_eq!(bc.chunks[0].code.len(), 8);
-		assert_eq!(bc.chunks[0].code[0], Op::LoadVar { idx: 0 });
-		assert_eq!(bc.chunks[0].code[1], Op::JumpIfZero { label_id: 0 }); // eval condition
-		assert_eq!(bc.chunks[0].code[2], Op::LoadVar { idx: 0 }); // if true (1), continue down if branch
-		assert_eq!(bc.chunks[0].code[3], Op::Jump { label_id: 1 }); // jump to end of if-else
-		assert_eq!(bc.chunks[0].code[4], Op::JumpLabel { label_id: 0 }); // if false (0), jump to else branch
-		assert_eq!(bc.chunks[0].code[5], Op::Constant { val: 3 }); // else branch
-		assert_eq!(bc.chunks[0].code[6], Op::JumpLabel { label_id: 1 }); // end of if-else
-		assert_eq!(bc.chunks[0].code[7], Op::Return);
+		assert_eq!(bc.chunks[0].code, [
+			Op::LoadVar { idx: 0 },
+			Op::JumpIfZero { label_id: 0 }, // eval condition
+			Op::LoadVar { idx: 0 }, 		// if true (1), continue down if branch
+			Op::Jump { label_id: 1 }, 		// jump to end of if-else
+			Op::JumpLabel { label_id: 0 },  // if false (0), jump to else branch
+			Op::Constant { val: 3 }, 	    // else branch
+			Op::JumpLabel { label_id: 1 },  // end of if-else
+			Op::SetVar { idx: 0 },			// store result of if-else (by overwriting x's place on stack)
+			Op::Pop,						// pop upper values
+			Op::Return
+		]);
 	}
 }
