@@ -1,4 +1,8 @@
+use std::ops::Range;
+
 /**
+For the following function:
+
 MIT License
 
 Copyright (c) 2021 Eric Zhang
@@ -28,7 +32,7 @@ use ariadne::{Color, Fmt, Label, Report, ReportKind, Source};
 use chumsky::prelude::*;
 
 /// Format parser errors into a human-readable message.
-pub fn format_errors(src: &str, errors: Vec<Simple<char>>) -> String {
+pub fn format_parse_errors(src: &str, errors: Vec<Simple<char>>) -> String {
     let mut reports = vec![];
     let errors: Vec<_> = errors.into_iter().map(|e| e.map(|c| c.to_string())).collect();
 
@@ -98,6 +102,17 @@ pub fn format_errors(src: &str, errors: Vec<Simple<char>>) -> String {
 
         let mut buf = vec![];
         report.finish().write(Source::from(&src), &mut buf).unwrap();
+        reports.push(std::str::from_utf8(&buf[..]).unwrap().to_string());
+    }
+
+    reports.join("\n")
+}
+
+pub fn format_codegen_errors(src: &str, errors: Vec<Report<'static, Range<usize>>>) -> String {
+    let mut reports = vec![];
+    for report in errors {
+        let mut buf = vec![];
+        report.write(Source::from(&src), &mut buf).unwrap();
         reports.push(std::str::from_utf8(&buf[..]).unwrap().to_string());
     }
 

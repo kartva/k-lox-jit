@@ -58,7 +58,7 @@ fn create_span_from_pair(lhs: Spanned, op: fn(Box<Spanned>, Box<Spanned>) -> Exp
 
 use chumsky::{combinator::Repeated, prelude::*, Span};
 
-use crate::parse_err::format_errors;
+use crate::error::format_parse_errors;
 fn parse() -> impl Parser<char, Vec<Spanned>, Error = Simple<char>> {
     let ident = text::ident().padded();
 
@@ -202,7 +202,7 @@ fn parse() -> impl Parser<char, Vec<Spanned>, Error = Simple<char>> {
 }
 
 pub fn parse_text(src: &str) -> Vec<Spanned> {
-    parse().parse(src).unwrap_or_else(|errs| panic!("{}", format_errors(src, errs))) 
+    parse().parse(src).unwrap_or_else(|errs| panic!("{}", format_parse_errors(src, errs))) 
 }
 
 #[cfg(test)]

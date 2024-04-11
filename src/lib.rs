@@ -1,5 +1,5 @@
 pub mod parse;
-mod parse_err;
+pub mod error;
 mod vm;
 pub mod jit;
 mod value;

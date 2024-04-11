@@ -1,6 +1,7 @@
-use std::{collections::HashMap, result};
+use std::{collections::HashMap, ops::Range};
 
 use crate::{parse::{ExprTy, Spanned}, vm::{ByteCode, ByteCodeChunk, Op}};
+use ariadne::{Color, Fmt, Label, Report, ReportKind, Source};
 
 #[derive(Debug, Clone, Copy)]
 struct StackIdx(u32);
@@ -35,6 +36,7 @@ struct CodegenCtx {
 	chunks: Vec<ByteCodeChunk>,
 	scopes: Vec<Scope>,
 	max_labels: usize,
+	err_report: Vec<ariadne::Report<'static, Range<usize>>>
 }
 
 impl CodegenCtx {
@@ -109,14 +111,22 @@ impl CodegenCtx {
 		self.scopes.pop().unwrap();
 	}
 
-	fn finish(self) -> ByteCode {
-		ByteCode {
-			chunks: self.chunks
+	fn finish(self) -> Result<ByteCode, Vec<ariadne::Report<'static, Range<usize>>>> {
+		if !self.err_report.is_empty() {
+			Err(self.err_report)
+		} else {
+			Ok(ByteCode {
+				chunks: self.chunks
+			})
 		}
+	}
+
+	fn register_new_report(&mut self, report: ariadne::Report<'static, Range<usize>>) {
+		self.err_report.push(report);		
 	}
 }
 
-fn emit_expr(Spanned(e, _): &Spanned, ctx: &mut CodegenCtx) {
+fn emit_expr(Spanned(e, span): &Spanned, ctx: &mut CodegenCtx) {
 	match e {
 		ExprTy::Num(n) => {
 			ctx.block().push(Op::Constant { val: *n });
@@ -169,8 +179,21 @@ fn emit_expr(Spanned(e, _): &Spanned, ctx: &mut CodegenCtx) {
 			for arg in args {
 				emit_expr(arg, ctx);
 			}
-			let call = Op::Call { fn_idx: ctx.get_fn(name).unwrap_or_else(|| panic!("Undeclared function {}", name)).0, word_argc: args.len() as u32 };
-			ctx.block().push(call);
+
+			match ctx.get_fn(name) {
+				Some(fn_idx) => {
+					ctx.block().push(Op::Call { fn_idx: fn_idx.0, word_argc: args.len() as u32 });
+				},
+				None => {
+					ctx.register_new_report(Report::build(ReportKind::Error, (), span.start)
+						.with_message(format!("Undeclared function {}", name))
+						.with_label(
+							Label::new(span.clone())
+								.with_message("Undeclared function")
+								.with_color(Color::Red))
+						.finish());
+				}
+			}
 		},
 		ExprTy::If { cond, then, r#else } => {
 			emit_expr(cond, ctx);
@@ -256,7 +279,7 @@ fn emit_fn(Spanned(e, _span): Spanned, ctx: &mut CodegenCtx) {
 	}
 }
 
-pub fn codegen(e: Vec<Spanned>) -> ByteCode {
+pub fn codegen(e: Vec<Spanned>) -> Result<ByteCode, Vec<Report<'static, Range<usize>>>> {
 	let mut ctx = CodegenCtx::new();
 
 	ctx.start_new_scope();
@@ -276,7 +299,7 @@ mod tests {
 	#[test]
 	fn test_codegen() {
 		let e = parse_text("fn add (x, y) { var z = x + y; z }");
-		let bc = codegen(e);
+		let bc = codegen(e).unwrap();
 
 		assert_eq!(bc.chunks.len(), 1);
 		eprintln!("{:?}", bc.chunks[0].code); 
@@ -296,7 +319,7 @@ mod tests {
 	#[test]
 	fn test_if_codegen() {
 		let e = parse_text("fn test (x) { if (x) { x } else { 3 } }");
-		let bc = codegen(e);
+		let bc = codegen(e).unwrap();
 
 		assert_eq!(bc.chunks.len(), 1);
 		assert_eq!(bc.chunks[0].code, [
@@ -307,7 +330,7 @@ mod tests {
 			Op::JumpLabel { label_id: 0 },  // if false (0), jump to else branch
 			Op::Constant { val: 3 }, 	    // else branch
 			Op::JumpLabel { label_id: 1 },  // end of if-else
-			Op::SetVar { stack_idx: 0 },			// store result of if-else (by overwriting x's place on stack)
+			Op::SetVar { stack_idx: 0 },	// store result of if-else (by overwriting x's place on stack)
 			Op::Pop,						// pop upper values
 			Op::Return
 		]);
