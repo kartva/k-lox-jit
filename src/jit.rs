@@ -39,16 +39,24 @@ macro_rules! two_arg_one_ret {
     }
 }
 
-fn spill_stack_to_args(ops: &mut aarch64::Assembler, num_args: usize) {
-    for i in 0..(num_args as u32) {
+/// Top-most stack value is stored in reg_range.start.
+/// Bottom-most stack value is stored in reg_range.end.
+fn load_stack_into_regs(ops: &mut aarch64::Assembler, reg_range: Range<u32>) {
+    for i in reg_range {
         mdynasm!(ops
             ; ldr X(i), [sp], #16
         );
     }
 }
 
-fn spill_args_to_stack(ops: &mut aarch64::Assembler, num_args: usize) {
-    for i in (0..(num_args as u32)).rev() {
+/// Spills registers to stack, such that
+/// the top-most stack value contains value in reg_range.start.
+/// Eg. if reg_range is 0..3, then stack will have values in the order:
+/// [sp, #32]: X2
+/// [sp, #16]: X1
+/// [sp, #0]:  X0 <- top of stack
+fn spill_regs_to_stack(ops: &mut aarch64::Assembler, regs: Range<u32>) {
+    for i in regs.rev() {
         mdynasm!(ops
             ; str X(i), [sp, #-16]!
         );
