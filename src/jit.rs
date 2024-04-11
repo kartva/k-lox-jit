@@ -212,26 +212,30 @@ impl CompiledBlockCache {
                 },
                 Op::LessThan => {
                     two_arg_one_ret!(ops
-                        ; cmp x0, x1
-                        ; cset x0, ge // are inverted since cset sets to 1 if true
+                        ; cmp x1, x0
+                        ; mov x0, #0
+                        ; cset x0, lt
                     );
                 },
                 Op::GreaterThan => {
                     two_arg_one_ret!(ops
-                        ; cmp x0, x1
-                        ; cset x0, le
+                        ; cmp x1, x0
+                        ; mov x0, #0
+                        ; cset x0, gt
                     );
                 },
                 Op::LessThanEq => {
                     two_arg_one_ret!(ops
-                        ; cmp x0, x1
-                        ; cset x0, gt
+                        ; cmp x1, x0
+                        ; mov x0, #0
+                        ; cset x0, le
                     );
                 },
                 Op::GreaterThanEq => {
                     two_arg_one_ret!(ops
-                        ; cmp x0, x1
-                        ; cset x0, lt
+                        ; cmp x1, x0
+                        ; mov x0, #0
+                        ; cset x0, ge
                     );
                 },
                 Op::JumpLabel { label_id} => {
