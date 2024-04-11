@@ -97,7 +97,7 @@ impl CodegenCtx {
 	/// and push the result of the scope (topmost stack value) to the stack
 	fn finish_scope(&mut self) {
 		if !self.scope().vars.is_empty() {
-			let result_set = Op::SetVar { idx: self.scope().start_idx };
+			let result_set = Op::SetVar { stack_idx: self.scope().start_idx };
 			self.block().push(result_set);
 		
 			// pop used variables
@@ -143,7 +143,7 @@ fn emit_expr(Spanned(e, _): &Spanned, ctx: &mut CodegenCtx) {
 		},
 		ExprTy::Var(name) => {
 			let reg = ctx.get(name.as_str()).expect("Variable not found");
-			ctx.block().push(Op::LoadVar { idx: reg.0 });
+			ctx.block().push(Op::LoadVar { stack_idx: reg.0 });
 		},
 		ExprTy::LessThan(lhs, rhs) => {
 			emit_expr(lhs, ctx);
@@ -169,7 +169,7 @@ fn emit_expr(Spanned(e, _): &Spanned, ctx: &mut CodegenCtx) {
 			for arg in args {
 				emit_expr(arg, ctx);
 			}
-			let call = Op::Call { idx: ctx.get_fn(name).unwrap_or_else(|| panic!("Undeclared function {}", name)).0, word_argc: args.len() as u32 };
+			let call = Op::Call { fn_idx: ctx.get_fn(name).unwrap_or_else(|| panic!("Undeclared function {}", name)).0, word_argc: args.len() as u32 };
 			ctx.block().push(call);
 		},
 		ExprTy::If { cond, then, r#else } => {
@@ -217,7 +217,7 @@ fn emit_stmt(node: &Spanned, ctx: &mut CodegenCtx) {
 		ExprTy::Set { name, rhs } => {
 			emit_expr(rhs, ctx);
 			let reg = ctx.get(name.as_str()).expect("Variable not found");
-			ctx.block().push(Op::SetVar { idx: reg.0 });
+			ctx.block().push(Op::SetVar { stack_idx: reg.0 });
 			ctx.block().push(Op::Pop);
 		},
 		_ => {
@@ -281,11 +281,11 @@ mod tests {
 		assert_eq!(bc.chunks.len(), 1);
 		eprintln!("{:?}", bc.chunks[0].code); 
 		assert_eq!(bc.chunks[0].code, [
-			Op::LoadVar { idx: 0 },
-			Op::LoadVar { idx: 1 },
+			Op::LoadVar { stack_idx: 0 },
+			Op::LoadVar { stack_idx: 1 },
 			Op::Add,
-			Op::LoadVar { idx: 2 },
-			Op::SetVar { idx: 0 }, 
+			Op::LoadVar { stack_idx: 2 },
+			Op::SetVar { stack_idx: 0 }, 
 			Op::Pop, // pop z
 			Op::Pop, // pop y
 			Op::Pop, // pop x
@@ -300,14 +300,14 @@ mod tests {
 
 		assert_eq!(bc.chunks.len(), 1);
 		assert_eq!(bc.chunks[0].code, [
-			Op::LoadVar { idx: 0 },
+			Op::LoadVar { stack_idx: 0 },
 			Op::JumpIfZero { label_id: 0 }, // eval condition
-			Op::LoadVar { idx: 0 }, 		// if true (1), continue down if branch
+			Op::LoadVar { stack_idx: 0 }, 		// if true (1), continue down if branch
 			Op::Jump { label_id: 1 }, 		// jump to end of if-else
 			Op::JumpLabel { label_id: 0 },  // if false (0), jump to else branch
 			Op::Constant { val: 3 }, 	    // else branch
 			Op::JumpLabel { label_id: 1 },  // end of if-else
-			Op::SetVar { idx: 0 },			// store result of if-else (by overwriting x's place on stack)
+			Op::SetVar { stack_idx: 0 },			// store result of if-else (by overwriting x's place on stack)
 			Op::Pop,						// pop upper values
 			Op::Return
 		]);

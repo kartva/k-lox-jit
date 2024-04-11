@@ -186,7 +186,7 @@ impl CompiledBlockCache {
                         ; sdiv x0, x0, x1 // rounds towards zero
                     );
                 },
-                Op::LoadVar { idx } => {
+                Op::LoadVar { stack_idx: idx } => {
                     mdynasm!(ops
                         ; sub x0, fp, #((idx + 1) * 16) // calculate addr
                         // attempted to do this using a negative offset for ldr
@@ -195,7 +195,7 @@ impl CompiledBlockCache {
                         ; str x0, [sp, #-16]! // store on stack
                     );
                 },
-                Op::SetVar { idx } => {
+                Op::SetVar { stack_idx: idx } => {
                     mdynasm!(ops
                         ; sub x1, fp, #((idx + 1) * 16) // calculate addr
                         ; ldr x0, [sp] // load new value from stack
@@ -250,7 +250,7 @@ impl CompiledBlockCache {
                         ; cbz x0, =>label
                     );
                 },
-                Op::Call { idx, word_argc } => {
+                Op::Call { fn_idx: idx, word_argc } => {
                     mdynasm!(ops
                         // load arguments to registers
                         ; ldr x0, ->cbc_ptr
@@ -292,8 +292,8 @@ mod jit_tests {
             code: vec![
                 Op::Constant { val: 2 },
                 Op::Constant { val: 3 },
-                Op::LoadVar { idx: 0 }, 
-                Op::LoadVar { idx: 1 },
+                Op::LoadVar { stack_idx: 0 }, 
+                Op::LoadVar { stack_idx: 1 },
                 Op::Add,
                 Op::Return,
             ],
