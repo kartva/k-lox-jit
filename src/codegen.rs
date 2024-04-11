@@ -152,8 +152,18 @@ fn emit_expr(Spanned(e, span): &Spanned, ctx: &mut CodegenCtx) {
 			ctx.block().push(Op::Div);
 		},
 		ExprTy::Var(name) => {
-			let reg = ctx.get(name.as_str()).expect("Variable not found");
-			ctx.block().push(Op::LoadVar { stack_idx: reg.0 });
+			match ctx.get(name.as_str()) {
+				Some(reg) => ctx.block().push(Op::LoadVar { stack_idx: reg.0 }),
+				None => {
+					ctx.register_new_report(Report::build(ReportKind::Error, (), span.start)
+						.with_message(format!("Undeclared variable {}", name))
+						.with_label(
+							Label::new(span.clone())
+								.with_message("Undeclared variable")
+								.with_color(Color::Red))
+						.finish());
+				}
+			}
 		},
 		ExprTy::LessThan(lhs, rhs) => {
 			emit_expr(lhs, ctx);
@@ -259,7 +269,7 @@ fn emit_stmt_block(body: &[Spanned], ctx: &mut CodegenCtx) {
 	emit_expr(ret, ctx);
 }
 
-fn emit_fn(Spanned(e, _span): Spanned, ctx: &mut CodegenCtx) {
+fn emit_fn(Spanned(e, span): Spanned, ctx: &mut CodegenCtx) {
 	if let ExprTy::Fn { name, args, body } = e {
 		let fn_idx = ctx.alloc_fn(name.clone());
 		ctx.start_new_block();
@@ -275,7 +285,11 @@ fn emit_fn(Spanned(e, _span): Spanned, ctx: &mut CodegenCtx) {
 		ctx.finish_scope();
 		ctx.block().push(Op::Return);
 	} else {
-		panic!("Expected function expression, found {e:?}");
+		let error_report = Report::build(ReportKind::Error, (), span.start)
+			.with_message(format!("Expected function expression, found {:?}", e))
+			.with_label(Label::new(span.clone()).with_message("Expected function expression"))
+			.finish();
+		ctx.register_new_report(error_report);
 	}
 }
 
