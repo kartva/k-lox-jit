@@ -1,7 +1,7 @@
 use std::{collections::HashMap, ops::Range};
 
 use crate::{parse::{ExprTy, Spanned}, vm::{ByteCode, ByteCodeChunk, Op}};
-use ariadne::{Color, Fmt, Label, Report, ReportKind, Source};
+use ariadne::{Color, Label, Report, ReportKind};
 
 #[derive(Debug, Clone, Copy)]
 struct StackIdx(u32);

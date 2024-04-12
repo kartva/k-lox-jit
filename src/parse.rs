@@ -70,7 +70,7 @@ fn create_span_from_pair(lhs: Spanned, op: fn(Box<Spanned>, Box<Spanned>) -> Exp
     Spanned(op(Box::new(lhs), Box::new(rhs)), span)
 }
 
-use chumsky::{combinator::Repeated, prelude::*, Span};
+use chumsky::{combinator::Repeated, prelude::*};
 
 use crate::error::format_parse_errors;
 fn parse() -> impl Parser<char, Vec<Spanned>, Error = Simple<char>> {
@@ -150,7 +150,7 @@ fn parse() -> impl Parser<char, Vec<Spanned>, Error = Simple<char>> {
             )
             .foldl(|lhs, (op, rhs)| create_span_from_pair(lhs, op, rhs));
 
-        let cmp = sum
+        sum
             .clone()
             .then(
                 op("<=").to(ExprTy::LessThanEq as fn(_, _) -> _)
@@ -160,9 +160,7 @@ fn parse() -> impl Parser<char, Vec<Spanned>, Error = Simple<char>> {
                     .then(sum)
                     .repeated(),
             )
-            .foldl(|lhs, (op, rhs)| create_span_from_pair(lhs, op, rhs));
-
-        cmp
+            .foldl(|lhs, (op, rhs)| create_span_from_pair(lhs, op, rhs))
     })
     .debug("expr").labelled("expr");
 

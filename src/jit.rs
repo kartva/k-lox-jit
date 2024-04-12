@@ -1,7 +1,7 @@
 use std::{collections::HashMap, ops::Range};
 
 use crate::
-    vm::{ByteCode, ByteCodeChunk, Op}
+    vm::{ByteCode, Op}
 ;
 use dynasmrt::{aarch64, dynasm, AssemblyOffset, DynamicLabel, DynasmApi, DynasmLabelApi, ExecutableBuffer};
 use log::debug;
@@ -291,6 +291,7 @@ impl CompiledBlockCache {
 mod jit_tests {
     use std::ptr::null;
 
+    use crate::vm::ByteCodeChunk;
     use super::*;
 
     #[test]
