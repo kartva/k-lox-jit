@@ -266,9 +266,21 @@ fn emit_stmt(node: &Spanned, ctx: &mut CodegenCtx) {
 		},
 		ExprTy::Set { name, rhs } => {
 			emit_expr(rhs, ctx);
-			let reg = ctx.get(name.as_str()).expect("Variable not found");
-			ctx.block().push(Op::SetVar { stack_idx: reg.0 });
-			ctx.block().push(Op::Pop);
+			match ctx.get(name.as_str()) {
+				Some(reg) => {
+					ctx.block().push(Op::SetVar { stack_idx: reg.0 });
+					ctx.block().push(Op::Pop);
+				},
+				None => {
+					ctx.register_new_report(Report::build(ReportKind::Error, (), span.start)
+						.with_message(format!("Undeclared variable {}", name))
+						.with_label(
+							Label::new(span.clone())
+								.with_message("Undeclared variable")
+								.with_color(Color::Red))
+						.finish());
+				}
+			}
 		},
 		ExprTy::While { cond, body } => {
 			let start_label = ctx.alloc_label();
@@ -392,7 +404,7 @@ mod tests {
 		assert_eq!(bc.chunks[0].code, [
 			Op::LoadVar { stack_idx: 0 },
 			Op::JumpIfZero { label_id: 0 }, // eval condition
-			Op::LoadVar { stack_idx: 0 }, 		// if true (1), continue down if branch
+			Op::LoadVar { stack_idx: 0 }, 	// if true (1), continue down if branch
 			Op::Jump { label_id: 1 }, 		// jump to end of if-else
 			Op::JumpLabel { label_id: 0 },  // if false (0), jump to else branch
 			Op::Constant { val: 3 }, 	    // else branch
