@@ -1,16 +1,27 @@
-### TODO:
-Nested scope blocks do not handle variable allocation and de-allocation properly
+### Roadmap:
+- Register allocation for JITter
+- Interpreter for bytecode (to switch between JIT and interpreter)
+- Look into making on-stack replacement (OSR) possible
+1. Types
+2. Objects
+3. Closures
+4. Garbage collector
+5. Async/await runtime (event loop)
+
+### Notes from Vihaan
+// neutral and absorbing elements in arithmatic
 
 ### Notes from Mikail
 // calculate stack size
 // can take max size of blocks and preallocate memory for stack
 // think about supporting variable length stack allocation (int a[n])
 
+### Notes from Tom
 // declared variable reordering can be performed at end of parsing block/function
 // so declared variables are at base and VLA are on top
 // multiple VLA through storing pointers 
 
-### Notes from the helpful lab TA
+### Notes from Yueyang Tang
 // implement simply typed lambda calculus, and JIT compile that
 // first: STLC (first level, this is where you do check types) JIT compile into imperative program 
 // erase all types, then JIT compile
