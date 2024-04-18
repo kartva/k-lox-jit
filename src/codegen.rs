@@ -120,9 +120,8 @@ impl CodegenCtx {
 			self.block().push(result_set);
 		
 			// pop used variables
-			for _ in 0..self.scope().vars.len() {
-				self.block().push(Op::Pop);
-			}
+			let count = self.scope().vars.len() as u32;
+			self.block().push(Op::Pop { count });
 		}
 	
 		self.scopes.pop().unwrap();
@@ -269,7 +268,7 @@ fn emit_stmt(node: &Spanned, ctx: &mut CodegenCtx) {
 			match ctx.get(name.as_str()) {
 				Some(reg) => {
 					ctx.block().push(Op::SetVar { stack_idx: reg.0 });
-					ctx.block().push(Op::Pop);
+					ctx.block().push(Op::Pop { count: 1 });
 				},
 				None => {
 					ctx.register_new_report(Report::build(ReportKind::Error, (), span.start)
@@ -320,7 +319,7 @@ fn emit_stmt(node: &Spanned, ctx: &mut CodegenCtx) {
 		},
 		_ => {
 			emit_expr(node, ctx);
-			ctx.block().push(Op::Pop);
+			ctx.block().push(Op::Pop { count: 1 });
 		}
 	}
 }
@@ -388,9 +387,7 @@ mod tests {
 			Op::Add,
 			Op::LoadVar { stack_idx: 2 },
 			Op::SetVar { stack_idx: 0 }, 
-			Op::Pop, // pop z
-			Op::Pop, // pop y
-			Op::Pop, // pop x
+			Op::Pop { count: 3 },
 			Op::Return
 		]);
 	}
@@ -410,7 +407,7 @@ mod tests {
 			Op::Constant { val: 3 }, 	    // else branch
 			Op::JumpLabel { label_id: 1 },  // end of if-else
 			Op::SetVar { stack_idx: 0 },	// store result of if-else (by overwriting x's place on stack)
-			Op::Pop,						// pop upper values
+			Op::Pop { count: 1 },						// pop upper values
 			Op::Return
 		]);
 	}

@@ -5,7 +5,7 @@ pub enum Op {
 	Sub,
 	Mul,
 	Div,
-	Pop,
+	Pop { count: u32 },
 	LessThan,
 	GreaterThan,
 	LessThanEq,

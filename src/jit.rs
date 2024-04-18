@@ -204,10 +204,10 @@ impl CompiledBlockCache {
                         ; ldr x0, [sp] // load new value from stack
                         ; str x0, [x1] // update on stack
                     );
-                }
-                Op::Pop => {
+                },
+                Op::Pop { count } => {
                     mdynasm!(ops
-                        ; add sp, sp, #16
+                        ; add sp, sp, #(16 * count)
                     );
                 },
                 Op::LessThan => {
