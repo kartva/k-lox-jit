@@ -1,4 +1,4 @@
-use std::{collections::HashMap, ops::Range};
+use std::collections::{HashMap, VecDeque};
 
 use crate::
     vm::{ByteCode, Op}
@@ -19,46 +19,6 @@ macro_rules! mdynasm {
             ; .alias lr, x30
             $($t)*
         )
-    }
-}
-
-/// Loads arg1 and arg2 into x0 and x1, and stores the result in x0.
-macro_rules! two_arg_one_ret {
-    ($ops:ident $($t:tt)*) => {
-        mdynasm!($ops
-            // load value from the address stored in sp,
-            // stores in dest, then increment sp by 16
-			; ldr x0, [sp], #16
-			; ldr x1, [sp], #16
-            $($t)*
-            // store the result in the address stored in sp
-            // then decrement sp by 16
-			; str x0, [sp, #-16]!
-        )
-    }
-}
-
-/// Top-most stack value is stored in reg_range.start.
-/// Bottom-most stack value is stored in reg_range.end.
-fn load_stack_into_regs(ops: &mut aarch64::Assembler, reg_range: Range<u32>) {
-    for i in reg_range {
-        mdynasm!(ops
-            ; ldr X(i), [sp], #16
-        );
-    }
-}
-
-/// Spills registers to stack, such that
-/// the top-most stack value contains value in reg_range.start.
-/// Eg. if reg_range is 0..3, then stack will have values in the order:
-/// [sp, #32]: X2
-/// [sp, #16]: X1
-/// [sp, #0]:  X0 <- top of stack
-fn spill_regs_to_stack(ops: &mut aarch64::Assembler, regs: Range<u32>) {
-    for i in regs.rev() {
-        mdynasm!(ops
-            ; str X(i), [sp, #-16]!
-        );
     }
 }
 
@@ -92,6 +52,230 @@ pub unsafe extern "C" fn call_fn(cbc: *mut CompiledBlockCache, function_idx: u32
     ret
 }
 
+#[derive(Debug, Clone, Copy)]
+enum Loc {
+    Reg(u32),
+    Stack(u32),
+}
+
+#[derive(Debug, Clone, Copy)]
+enum StackEntry {
+    Origin(Loc),
+    Ref(Loc),
+}
+
+struct MemLocationAllocator {
+    free_regs: VecDeque<u32>,
+    used_regs: VecDeque<u32>,
+    /// Tracks the number of elements that exist on the stack.
+    asm_stack_size: u32,
+    /// VM stack entries, where each entry is either a register or a stack location.
+    vm_stack: Vec<StackEntry>,
+}
+
+impl MemLocationAllocator {
+    const DEFAULT_REGS: &'static [u32] = &[2, 3, 4, 5, 6, 7];
+
+    fn new() -> Self {
+        Self::new_with_regs(Self::DEFAULT_REGS.to_vec())
+    }
+
+    fn new_with_regs(free_regs: Vec<u32>) -> Self {
+        MemLocationAllocator {
+            free_regs: VecDeque::from(free_regs),
+            used_regs: VecDeque::new(),
+            asm_stack_size: 0,
+            vm_stack: Vec::new(),
+        }
+    }
+
+    fn stack_offset_from_base(&self, stack_idx: u32) -> u32 {
+        (stack_idx * 16) as _
+    }
+
+    fn load_from_stack_to_reg(&self, ops: &mut aarch64::Assembler, stack_idx: u32, reg: u32) {
+        mdynasm!(ops
+            ; sub x1, fp, #self.stack_offset_from_base(stack_idx)
+            ; ldr X(reg), [x1]
+        );
+    }
+
+    fn store_from_reg_to_stack(&self, ops: &mut aarch64::Assembler, stack_idx: u32, reg: u32) {
+        mdynasm!(ops
+            ; sub x1, fp, #self.stack_offset_from_base(stack_idx)
+            ; str X(reg), [x1]
+        );
+    }
+
+    fn alloc_asm_stack_entry(&mut self) -> u32 {
+        self.asm_stack_size += 1;
+        self.asm_stack_size
+    }
+
+    fn try_alloc_reg(&mut self) -> Option<u32> {
+        self.free_regs.pop_back().map(|reg| {
+            self.used_regs.push_front(reg);
+            reg
+        })
+    }
+
+    /// Allocates a new memory location, either a register or a stack location.
+    fn alloc_memory_loc(&mut self) -> StackEntry {
+        self.try_alloc_reg().map_or_else(|| StackEntry::Origin(Loc::Stack(self.alloc_asm_stack_entry())), |reg| StackEntry::Origin(Loc::Reg(reg)))
+    }
+
+    /// Demotes a register to a stack location.
+    /// That is, scans the VM stack for all references to the register and replaces them with a newly allocated stack location.
+    /// The register is then freed.
+    fn demote_reg_to_stack(&mut self, ops: &mut aarch64::Assembler, reg: u32) {
+        let stack_entry = self.alloc_asm_stack_entry();
+        self.store_from_reg_to_stack(ops, stack_entry, reg);
+
+        debug!("demote X{reg} => asm_stack[{stack_entry}]");
+
+        for (i, st) in self.vm_stack.iter_mut().enumerate() {
+            match st {
+                StackEntry::Origin(Loc::Reg(r)) if *r == reg => {
+                    debug!("vm_stack[{i}] = X{reg} => asm_stack[{stack_entry}]");
+                    *st = StackEntry::Origin(Loc::Stack(stack_entry))
+                },
+                StackEntry::Ref(Loc::Reg(r)) if *r == reg => {
+                    debug!("vm_stack[{i}] = ref X{reg} => ref asm_stack[{stack_entry}]");
+                    *st = StackEntry::Ref(Loc::Stack(stack_entry))
+                },
+                _ => (),
+            }
+        }
+        self.free_reg(reg);
+    }
+
+    /// Allocates a register by (potentially) spilling an existing register value to stack,
+    /// and returns the register.
+    fn alloc_reg(&mut self, ops: &mut aarch64::Assembler) -> u32 {
+        match self.try_alloc_reg() {
+            Some(reg) => reg,
+            None => {
+                // Replace occurences of reg in stack with new stack entry
+                let reg = *self.used_regs.back().expect("no used registers to free, but no free registers available");
+                self.demote_reg_to_stack(ops, reg);
+
+                self.try_alloc_reg().expect("no free registers available")
+            }
+        }
+    }
+
+    /// Clones the entry at vm_stack_idx to the top of the VM stack.
+    fn clone_entry_to_top(&mut self, vm_stack_idx: usize) -> StackEntry {
+        let top_entry = match self.vm_stack[vm_stack_idx] {
+            StackEntry::Origin(o) => StackEntry::Ref(o),
+            st @ StackEntry::Ref(_) => st,
+        };
+        debug!("vm_stack[{}] <= vm_stack[{vm_stack_idx}]", self.vm_stack.len());
+        self.vm_stack.push(top_entry);
+        top_entry
+    }
+
+    /// Pops N entries from the VM stack and returns the registers they were promoted to.
+    /// The registers are then freed.
+    fn pop_vm_stack_to_regs<const N: usize>(&mut self, ops: &mut aarch64::Assembler) -> [u32; N] {
+        let mut regs = [Default::default(); N];
+
+        assert!(self.vm_stack.len() >= N, "not enough entries in vm stack");
+        assert!(self.used_regs.len() + self.free_regs.len() >= N, "not enough registers available");
+
+        for i in 0..N {
+            let entry = self.vm_stack.pop().unwrap();
+            regs[i] = self.promote_entry_to_reg(ops, entry);
+            debug!("vm_stack[{}] pop: {entry:?} -> X{}", self.vm_stack.len(), regs[i]);
+        }
+        for reg in regs.iter() {
+            self.free_reg(*reg);
+        }
+
+        regs
+    }
+
+    /// Pops the top-most entry from the VM stack. If the entry is a register, it is freed.
+    fn pop_top_entry(&mut self) {
+        let st = self.vm_stack.pop().unwrap();
+        match st {
+            StackEntry::Origin(Loc::Reg(reg)) => {
+                self.free_reg(reg)
+            },
+            StackEntry::Origin(Loc::Stack(_)) => {
+                self.asm_stack_size -= 1;
+            },
+            StackEntry::Ref(_) => (),
+        };
+    }
+
+    /// Promotes an entry in the VM stack to a register.
+    /// If the entry is already a register, the register is returned. Otherwise, promotes the entry to a register
+    /// by scanning the VM stack for all references to the entry and replaces them with a newly allocated register.
+    /// Returns the allocated register.
+    fn promote_entry_to_reg (&mut self, ops: &mut aarch64::Assembler, loc: StackEntry) -> u32 {
+        match loc {
+            StackEntry::Origin(Loc::Reg(reg)) | StackEntry::Ref(Loc::Reg(reg)) => reg,
+            StackEntry::Origin(Loc::Stack(idx)) | StackEntry::Ref(Loc::Stack(idx)) => {
+                let new_reg = self.alloc_reg(ops);
+                debug!("promote asm_stack[{idx}] => X{new_reg}");
+                self.load_from_stack_to_reg(ops, idx, new_reg);
+                for (i, st) in self.vm_stack.iter_mut().enumerate() {
+                    match st {
+                        StackEntry::Origin(Loc::Stack(i)) if *i == idx => *st = {
+                            debug!("vm_stack[{i}] = asm_stack[{idx}] => X{new_reg}");
+                            StackEntry::Origin(Loc::Reg(new_reg))
+                        },
+                        StackEntry::Ref(Loc::Stack(i)) if *i == idx => *st = {
+                            debug!("vm_stack[{i}] = ref asm_stack[{idx}] => ref X{new_reg}");
+                            StackEntry::Ref(Loc::Reg(new_reg))
+                        },
+                        _ => (),
+                    }
+                }
+                new_reg
+            }
+        }
+    }
+
+    fn free_reg(&mut self, reg: u32) {
+        self.free_regs.push_front(reg);
+        self.used_regs.retain(|&r| r != reg);
+    }
+
+    pub fn push_reg_to_vm_stack(&mut self, reg: u32) {
+        let stack_entry = StackEntry::Origin(Loc::Reg(reg));
+        debug!("vm_stack[{}] <- X{reg}", self.vm_stack.len());
+        self.vm_stack.push(stack_entry);
+    }
+
+    fn obtain_mutable_reg_entry(&mut self, ops: &mut aarch64::Assembler, stack_idx: usize) -> u32 {
+        match self.vm_stack[stack_idx] {
+            StackEntry::Origin(Loc::Reg(reg)) => reg,
+            StackEntry::Origin(Loc::Stack(idx)) | StackEntry::Ref(Loc::Stack(idx)) => {
+                let new_reg = self.alloc_reg(ops);
+                self.vm_stack[stack_idx] = StackEntry::Origin(Loc::Reg(new_reg));
+                self.load_from_stack_to_reg(ops, idx, new_reg);
+                new_reg
+            },
+            StackEntry::Ref(Loc::Reg(reg)) => {
+                let new_reg = self.alloc_reg(ops);
+                self.vm_stack[stack_idx] = StackEntry::Origin(Loc::Reg(new_reg));
+                mdynasm!(ops
+                    ; mov X(new_reg), X(reg)
+                );
+                new_reg
+            }        
+        }
+    }
+
+    fn spill_all_regs_to_stack(&mut self, ops: &mut aarch64::Assembler) {
+        while let Some(reg) = self.used_regs.back() {
+            self.demote_reg_to_stack(ops, *reg);
+        }
+    }
+}
+
 impl CompiledBlockCache {
     pub fn new(bc: ByteCode) -> Box<CompiledBlockCache> {
         Box::new(CompiledBlockCache {
@@ -102,12 +286,13 @@ impl CompiledBlockCache {
 
     /// # Safety
     /// cbc must be a valid pointer and not be moved
-    pub unsafe fn compile(cbc: *mut Self, idx: u32) -> (ExecutableBuffer, AssemblyOffset) {
+    pub unsafe fn compile(cbc: *const Self, idx: u32) -> (ExecutableBuffer, AssemblyOffset) {
         let cbc_ref = unsafe { &*cbc };
         debug!("jitting function idx {}", idx);
         let chunk = &cbc_ref.bc.chunks[idx as usize];
 
         let mut ops = aarch64::Assembler::new().unwrap();
+        let mut malloc = MemLocationAllocator::new_with_regs(vec![4, 5]);
 
         mdynasm!(
             ops
@@ -152,6 +337,12 @@ impl CompiledBlockCache {
                 ; mov sp, x2
             );
         }
+
+        for i in 1..=chunk.in_arg {
+            malloc.vm_stack.push(StackEntry::Origin(Loc::Stack(i)));
+        }
+        malloc.asm_stack_size = chunk.in_arg as _;
+
         let mut labels: HashMap<usize, DynamicLabel> = HashMap::new();
         for op in chunk.code.iter() {
             if let Op::JumpLabel { label_id } = op {
@@ -161,82 +352,92 @@ impl CompiledBlockCache {
         }
 
         for op in &chunk.code {
+            debug!("--- op: {:?} ---", op);
             match op {
                 Op::Constant { val } => {
                     let num = *val;
+                    let entry = malloc.alloc_reg(&mut ops);
+                    malloc.push_reg_to_vm_stack(entry);
+
+                    debug!("X{entry} <- {num}");
+
                     mdynasm!(ops
-                        ; mov x0, num as _
-                        ; str x0, [sp, #-16]!
+                        ; mov X(entry), #num as _
                     );
                 }
-                Op::Add => {
-                    two_arg_one_ret!(ops
-                        ; add x0, x0, x1
-                    );
-                }
-                Op::Sub => {
-                    two_arg_one_ret!(ops
-                        ; sub x0, x1, x0
-                    );
-                }
-                Op::Mul => {
-                    two_arg_one_ret!(ops
-                        ; mul x0, x0, x1
-                    );
-                }
-                Op::Div => {
-                    two_arg_one_ret!(ops
-                        ; sdiv x0, x0, x1 // rounds towards zero
-                    );
+                bin_op_with_res @ (Op::Add | Op::Sub | Op::Mul | Op::Div | Op::LessThan | Op::LessThanEq | Op::GreaterThan | Op::GreaterThanEq) => {
+                    let [r2, r1] = malloc.pop_vm_stack_to_regs(&mut ops);
+                    let res_r = malloc.alloc_reg(&mut ops);
+
+                    debug!("X{res_r} = X{r1} {bin_op_with_res:?} X{r2}");
+
+                    match bin_op_with_res {
+                        Op::Add => {
+                            mdynasm!(ops
+                                ; add X(res_r), X(r1), X(r2)
+                            );
+                        }
+                        Op::Sub => {
+                            mdynasm!(ops
+                                ; sub X(res_r), X(r1), X(r2)
+                            );
+                        }
+                        Op::Mul => {
+                            mdynasm!(ops
+                                ; mul X(res_r), X(r1), X(r2)
+                            );
+                        }
+                        Op::Div => {
+                            mdynasm!(ops
+                                ; sdiv X(res_r), X(r1), X(r2)
+                            );
+                        },
+                        Op::LessThan => {
+                            mdynasm!(ops
+                                ; cmp X(r1), X(r2)
+                                ; mov X(res_r), #0
+                                ; cset X(res_r), lt
+                            );
+                        },
+                        Op::GreaterThan => {
+                            mdynasm!(ops
+                                ; cmp X(r1), X(r2)
+                                ; mov X(res_r), #0
+                                ; cset X(res_r), gt
+                            );
+                        },
+                        Op::LessThanEq => {
+                            mdynasm!(ops
+                                ; cmp X(r1), X(r2)
+                                ; mov X(res_r), #0
+                                ; cset X(res_r), le
+                            );
+                        },
+                        Op::GreaterThanEq => {
+                            mdynasm!(ops
+                                ; cmp X(r1), X(r2)
+                                ; mov X(res_r), #0
+                                ; cset X(res_r), ge
+                            );
+                        },
+                        _ => unreachable!(),
+                    }
+                    malloc.push_reg_to_vm_stack(res_r);
                 },
-                Op::LoadVar { stack_idx: idx } => {
-                    mdynasm!(ops
-                        ; sub x0, fp, #((idx + 1) * 16) // calculate addr
-                        // attempted to do this using a negative offset for ldr
-                        // did not work
-                        ; ldr x0, [x0] // load from address
-                        ; str x0, [sp, #-16]! // store on stack
-                    );
+                Op::LoadVar { stack_idx } => {
+                    malloc.clone_entry_to_top(*stack_idx as usize);
                 },
-                Op::SetVar { stack_idx: idx } => {
+                Op::SetVar { stack_idx } => {
+                    let val = malloc.promote_entry_to_reg(&mut ops, *malloc.vm_stack.last().unwrap());
+                    let reg = malloc.obtain_mutable_reg_entry(&mut ops, *stack_idx as usize);
                     mdynasm!(ops
-                        ; sub x1, fp, #((idx + 1) * 16) // calculate addr
-                        ; ldr x0, [sp] // load new value from stack
-                        ; str x0, [x1] // update on stack
+                        ; mov X(reg), X(val)
                     );
                 },
                 Op::Pop { count } => {
-                    mdynasm!(ops
-                        ; add sp, sp, #(16 * count)
-                    );
-                },
-                Op::LessThan => {
-                    two_arg_one_ret!(ops
-                        ; cmp x1, x0
-                        ; mov x0, #0
-                        ; cset x0, lt
-                    );
-                },
-                Op::GreaterThan => {
-                    two_arg_one_ret!(ops
-                        ; cmp x1, x0
-                        ; mov x0, #0
-                        ; cset x0, gt
-                    );
-                },
-                Op::LessThanEq => {
-                    two_arg_one_ret!(ops
-                        ; cmp x1, x0
-                        ; mov x0, #0
-                        ; cset x0, le
-                    );
-                },
-                Op::GreaterThanEq => {
-                    two_arg_one_ret!(ops
-                        ; cmp x1, x0
-                        ; mov x0, #0
-                        ; cset x0, ge
-                    );
+                    for _ in 0..*count {
+                        malloc.pop_top_entry();
+                    }
                 },
                 Op::JumpLabel { label_id} => {
                     let label = *labels.get(label_id).unwrap();
@@ -252,28 +453,34 @@ impl CompiledBlockCache {
                 },
                 Op::JumpIfZero { label_id } => {
                     let label = *labels.get(label_id).unwrap();
+                    let [reg] = malloc.pop_vm_stack_to_regs(&mut ops);
                     mdynasm!(ops
-                        ; ldr x0, [sp], #16
-                        ; cbz x0, =>label
+                        ; cbz X(reg), =>label
                     );
                 },
                 Op::Call { fn_idx: idx, word_argc } => {
+                    malloc.spill_all_regs_to_stack(&mut ops);
                     mdynasm!(ops
                         // load arguments to registers
+                        ; add sp, fp, #malloc.stack_offset_from_base(malloc.asm_stack_size)
                         ; ldr x0, ->cbc_ptr
                         ; mov w1, *idx as u64
                         ; mov x2, sp // argv is current stack pointer
                         ; mov x3, *word_argc as u64
                         ; ldr x4, ->call_fn
                         ; blr x4 // call function
-
-                        ; add sp, sp, #(word_argc * 16) // pop args
-                        ; str x0, [sp, #-16]! // store return value on stack
                     );
+                    // pop arguments from stack
+                    for _ in 0..*word_argc {
+                        malloc.pop_top_entry();
+                    }
+                    // push return value to stack
+                    malloc.push_reg_to_vm_stack(0);
                 },
                 Op::Return => {
+                    let [reg] = malloc.pop_vm_stack_to_regs(&mut ops);
                     mdynasm!(ops
-                        ; ldr x0, [sp], #16
+                        ; mov x0, X(reg)
                         ; mov sp, fp // restore stack pointer
                         ; ldp fp, lr, [sp], #16 // restore frame pointer and link register
                         ; ret
@@ -300,8 +507,6 @@ mod jit_tests {
             code: vec![
                 Op::Constant { val: 2 },
                 Op::Constant { val: 3 },
-                Op::LoadVar { stack_idx: 0 }, 
-                Op::LoadVar { stack_idx: 1 },
                 Op::Add,
                 Op::Return,
             ],
