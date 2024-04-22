@@ -268,7 +268,6 @@ fn emit_stmt(node: &Spanned, ctx: &mut CodegenCtx) {
 			match ctx.get(name.as_str()) {
 				Some(reg) => {
 					ctx.block().push(Op::SetVar { stack_idx: reg.0 });
-					ctx.block().push(Op::Pop { count: 1 });
 				},
 				None => {
 					ctx.register_new_report(Report::build(ReportKind::Error, (), span.start)

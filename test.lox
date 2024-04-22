@@ -1,5 +1,9 @@
 fn main () {
-	var a = 2;
-	var b = 3;
-	return a + (b * 4);
+	var n = 5;
+	var i = 1;
+
+	while (i <= n) {
+		i = i + 1;
+	};
+	return i;
 }

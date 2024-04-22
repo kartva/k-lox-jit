@@ -1,8 +1,9 @@
-use std::collections::{HashMap, VecDeque};
+use std::{collections::{HashMap, VecDeque}, fmt::Display};
 
 use crate::
     vm::{ByteCode, Op}
 ;
+use chumsky::debug;
 use dynasmrt::{aarch64, dynasm, AssemblyOffset, DynamicLabel, DynasmApi, DynasmLabelApi, ExecutableBuffer};
 use log::debug;
 
@@ -59,9 +60,30 @@ enum Loc {
 }
 
 #[derive(Debug, Clone, Copy)]
-enum StackEntry {
-    Origin(Loc),
-    Ref(Loc),
+enum LocTy {
+    Origin,
+    Ref,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct StackEntry {
+    ty: LocTy,
+    loc: Loc,
+}
+
+impl Display for StackEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.ty {
+            LocTy::Origin => write!(f, ""),
+            LocTy::Ref => write!(f, "ref "),
+        }?;
+
+        match self.loc {
+            Loc::Reg(reg) => write!(f, "X{}", reg),
+            Loc::Stack(idx) => write!(f, "asm_stack[{}]", idx),
+        }
+    }
+
 }
 
 struct MemLocationAllocator {
@@ -71,6 +93,11 @@ struct MemLocationAllocator {
     asm_stack_size: u32,
     /// VM stack entries, where each entry is either a register or a stack location.
     vm_stack: Vec<StackEntry>,
+}
+
+struct MemTransaction<'a> {
+    in_use_regs: VecDeque<u32>,
+    allocator: &'a mut MemLocationAllocator,
 }
 
 impl MemLocationAllocator {
@@ -89,20 +116,27 @@ impl MemLocationAllocator {
         }
     }
 
-    fn stack_offset_from_base(&self, stack_idx: u32) -> u32 {
+    fn start_txn(&mut self) -> MemTransaction {
+        MemTransaction {
+            in_use_regs: VecDeque::new(),
+            allocator: self,
+        }
+    }
+
+    fn stack_offset_from_base(stack_idx: u32) -> u32 {
         (stack_idx * 16) as _
     }
 
     fn load_from_stack_to_reg(&self, ops: &mut aarch64::Assembler, stack_idx: u32, reg: u32) {
         mdynasm!(ops
-            ; sub x1, fp, #self.stack_offset_from_base(stack_idx)
+            ; sub x1, fp, #Self::stack_offset_from_base(stack_idx)
             ; ldr X(reg), [x1]
         );
     }
 
     fn store_from_reg_to_stack(&self, ops: &mut aarch64::Assembler, stack_idx: u32, reg: u32) {
         mdynasm!(ops
-            ; sub x1, fp, #self.stack_offset_from_base(stack_idx)
+            ; sub x1, fp, #Self::stack_offset_from_base(stack_idx)
             ; str X(reg), [x1]
         );
     }
@@ -119,41 +153,6 @@ impl MemLocationAllocator {
         })
     }
 
-    /// Allocates a new memory location, either a register or a stack location.
-    fn alloc_memory_loc(&mut self) -> StackEntry {
-        self.try_alloc_reg().map_or_else(|| StackEntry::Origin(Loc::Stack(self.alloc_asm_stack_entry())), |reg| StackEntry::Origin(Loc::Reg(reg)))
-    }
-
-    /// Demotes registers to stack locations.
-    /// For each register, scans the VM stack for all references to the register and replaces them with a newly allocated stack location.
-    /// The registers are then freed.
-    fn demote_regs_to_stack(&mut self, ops: &mut aarch64::Assembler, regs: &[u32]) {
-        for &reg in regs {
-            let stack_entry = self.alloc_asm_stack_entry();
-            self.store_from_reg_to_stack(ops, stack_entry, reg);
-
-            debug!("demote X{reg} => asm_stack[{stack_entry}]");
-
-            for (i, st) in self.vm_stack.iter_mut().enumerate() {
-                match st {
-                    StackEntry::Origin(Loc::Reg(r)) if *r == reg => {
-                        debug!("vm_stack[{i}] = X{reg} => asm_stack[{stack_entry}]");
-                        *st = StackEntry::Origin(Loc::Stack(stack_entry))
-                    },
-                    StackEntry::Ref(Loc::Reg(r)) if *r == reg => {
-                        debug!("vm_stack[{i}] = ref X{reg} => ref asm_stack[{stack_entry}]");
-                        *st = StackEntry::Ref(Loc::Stack(stack_entry))
-                    },
-                    _ => (),
-                }
-            }
-        }
-
-        for &reg in regs {
-            self.free_reg(reg);
-        }
-    }
-
     /// Allocates registers by (potentially) spilling existing register values to stack,
     /// and returns the registers.
     fn alloc_n_regs<const N: usize>(&mut self, ops: &mut aarch64::Assembler) -> [u32; N] {
@@ -165,15 +164,12 @@ impl MemLocationAllocator {
     /// and returns the registers.
     /// 
     /// Each call to `alloc_regs` may invalidate the registers returned by previous calls.
-    fn alloc_regs(&mut self, ops: &mut aarch64::Assembler, n: usize, preserve_regs: Option<&[u32]>) -> Vec<u32> {
+    fn alloc_regs(&mut self, ops: &mut aarch64::Assembler, n: usize) -> Vec<u32> {
         let free_regs = self.free_regs.len();
 
         if free_regs < n {
             let regs_to_demote = n - free_regs;
-            let regs_to_demote = match preserve_regs {
-                Some(preserve_regs) => self.used_regs.iter().filter(|&r| !preserve_regs.contains(&r)).take(regs_to_demote).copied().collect::<Vec<_>>(),
-                None => self.used_regs.iter().take(regs_to_demote).copied().collect::<Vec<_>>()
-            };
+            let regs_to_demote = self.used_regs.iter().take(regs_to_demote).copied().collect::<Vec<_>>();
             self.demote_regs_to_stack(ops, &regs_to_demote);
         }
 
@@ -181,10 +177,10 @@ impl MemLocationAllocator {
     }
 
     /// Clones the entry at vm_stack_idx to the top of the VM stack.
-    fn clone_entry_to_top(&mut self, vm_stack_idx: usize) -> StackEntry {
+    fn clone_entry_to_top(&mut self, vm_stack_idx: usize) -> LocTy {
         let top_entry = match self.vm_stack[vm_stack_idx] {
-            StackEntry::Origin(o) => StackEntry::Ref(o),
-            st @ StackEntry::Ref(_) => st,
+            LocTy::Origin(o) => LocTy::Ref(o),
+            st @ LocTy::Ref(_) => st,
         };
         debug!("vm_stack[{}] <= vm_stack[{vm_stack_idx}]", self.vm_stack.len());
         self.vm_stack.push(top_entry);
@@ -203,7 +199,7 @@ impl MemLocationAllocator {
         debug!("{msg} -> X{regs:?}");
 
         for (entry, reg) in entries.iter().zip(regs.iter()) {
-            if matches!(entry, StackEntry::Origin(_)) {
+            if matches!(entry, LocTy::Origin(_)) {
                 self.free_reg(*reg);
             }
         }
@@ -215,13 +211,13 @@ impl MemLocationAllocator {
     fn pop_top_entry(&mut self) {
         let st = self.vm_stack.pop().unwrap();
         match st {
-            StackEntry::Origin(Loc::Reg(reg)) => {
+            LocTy::Origin(Loc::Reg(reg)) => {
                 self.free_reg(reg)
             },
-            StackEntry::Origin(Loc::Stack(_)) => {
+            LocTy::Origin(Loc::Stack(_)) => {
                 self.asm_stack_size -= 1;
             },
-            StackEntry::Ref(_) => (),
+            LocTy::Ref(_) => (),
         };
     }
 
@@ -231,12 +227,12 @@ impl MemLocationAllocator {
     /// Returns the allocated register.
     /// 
     /// Each call to `promote_entries_to_regs` may invalidate the registers returned by previous calls.
-    fn promote_entries_to_regs<const N: usize>(&mut self, ops: &mut aarch64::Assembler, locs: &[StackEntry; N]) -> [u32; N] {
+    fn promote_entries_to_regs<const N: usize>(&mut self, ops: &mut aarch64::Assembler, locs: &[LocTy; N]) -> [u32; N] {
         let mut regs = [0u32; N];
 
-        let allocs_required = locs.iter().filter(|&loc| matches!(loc, StackEntry::Origin(Loc::Stack(_)) | StackEntry::Ref(Loc::Stack(_)))).count();
+        let allocs_required = locs.iter().filter(|&loc| matches!(loc, LocTy::Origin(Loc::Stack(_)) | LocTy::Ref(Loc::Stack(_)))).count();
         let regs_to_preserve = locs.iter().filter_map(|&loc| match loc {
-            StackEntry::Origin(Loc::Reg(reg)) | StackEntry::Ref(Loc::Reg(reg)) => Some(reg),
+            LocTy::Origin(Loc::Reg(reg)) | LocTy::Ref(Loc::Reg(reg)) => Some(reg),
             _ => None,
         }).collect::<Vec<_>>();
 
@@ -244,8 +240,8 @@ impl MemLocationAllocator {
 
         for (i, loc) in locs.into_iter().enumerate() {
             regs[i] = match loc {
-                StackEntry::Origin(Loc::Reg(reg)) | StackEntry::Ref(Loc::Reg(reg)) => *reg,
-                StackEntry::Origin(Loc::Stack(idx)) | StackEntry::Ref(Loc::Stack(idx)) => {
+                LocTy::Origin(Loc::Reg(reg)) | LocTy::Ref(Loc::Reg(reg)) => *reg,
+                LocTy::Origin(Loc::Stack(idx)) | LocTy::Ref(Loc::Stack(idx)) => {
                     let reg = alloced_regs.pop().unwrap();
                     let idx = *idx;
 
@@ -253,13 +249,13 @@ impl MemLocationAllocator {
                     self.load_from_stack_to_reg(ops, idx, reg);
                     for st in self.vm_stack.iter_mut() {
                         match st {
-                            StackEntry::Origin(Loc::Stack(i)) if *i == idx => {
+                            LocTy::Origin(Loc::Stack(i)) if *i == idx => {
                                 debug!("vm_stack[{i}] = asm_stack[{idx}] => X{reg}");
-                                *st = StackEntry::Origin(Loc::Reg(reg));
+                                *st = LocTy::Origin(Loc::Reg(reg));
                             },
-                            StackEntry::Ref(Loc::Stack(i)) if *i == idx => {
+                            LocTy::Ref(Loc::Stack(i)) if *i == idx => {
                                 debug!("vm_stack[{i}] = ref asm_stack[{idx}] => ref X{reg}");
-                                *st = StackEntry::Ref(Loc::Reg(reg));
+                                *st = LocTy::Ref(Loc::Reg(reg));
                             },
                             _ => (),
                         }
@@ -277,23 +273,29 @@ impl MemLocationAllocator {
     }
 
     pub fn push_reg_to_vm_stack(&mut self, reg: u32) {
-        let stack_entry = StackEntry::Origin(Loc::Reg(reg));
+        let stack_entry = LocTy::Origin(Loc::Reg(reg));
         debug!("vm_stack[{}] <- X{reg}", self.vm_stack.len());
         self.vm_stack.push(stack_entry);
     }
 
     fn obtain_mutable_reg_entry(&mut self, ops: &mut aarch64::Assembler, stack_idx: usize) -> u32 {
         match self.vm_stack[stack_idx] {
-            StackEntry::Origin(Loc::Reg(reg)) => reg,
-            StackEntry::Origin(Loc::Stack(idx)) | StackEntry::Ref(Loc::Stack(idx)) => {
+            LocTy::Origin(Loc::Reg(reg)) => reg,
+            LocTy::Origin(Loc::Stack(idx)) | LocTy::Ref(Loc::Stack(idx)) => {
                 let [new_reg] = self.alloc_n_regs(ops);
-                self.vm_stack[stack_idx] = StackEntry::Origin(Loc::Reg(new_reg));
+                self.vm_stack[stack_idx] = LocTy::Origin(Loc::Reg(new_reg));
                 self.load_from_stack_to_reg(ops, idx, new_reg);
+
+                debug!("vm_stack[{stack_idx}] = asm_stack[{idx}] => X{new_reg}");
+
                 new_reg
             },
-            StackEntry::Ref(Loc::Reg(reg)) => {
+            LocTy::Ref(Loc::Reg(reg)) => {
                 let [new_reg] = self.alloc_n_regs(ops);
-                self.vm_stack[stack_idx] = StackEntry::Origin(Loc::Reg(new_reg));
+                self.vm_stack[stack_idx] = LocTy::Origin(Loc::Reg(new_reg));
+
+                debug!("vm_stack[{stack_idx}] = ref X{reg} => X{new_reg}");
+
                 mdynasm!(ops
                     ; mov X(new_reg), X(reg)
                 );
@@ -306,6 +308,70 @@ impl MemLocationAllocator {
         while let Some(reg) = self.used_regs.back().copied() {
             self.demote_regs_to_stack(ops, &[reg]);
         }
+    }
+}
+
+impl MemTransaction<'_> {
+    /// Demotes registers to stack locations.
+    /// For each register, scans the VM stack for all references to the register and replaces them with a newly allocated stack location.
+    /// The registers are then freed.
+    fn demote_reg_to_stack(&mut self, ops: &mut aarch64::Assembler, reg: u32) {
+        let stack_entry = self.allocator.alloc_asm_stack_entry();
+        self.allocator.store_from_reg_to_stack(ops, stack_entry, reg);
+
+        debug!("demote X{reg} => asm_stack[{stack_entry}]");
+
+        for (i, st) in self.vm_stack.iter_mut().enumerate() {
+            match st {
+                StackEntry { ty, loc: Loc::Reg(r) } if *r == reg => {
+                    let new_st = StackEntry { ty: *ty, loc: Loc::Stack(stack_entry) };
+                    debug!("vm_stack[{i}] = {st} => {new_st}");
+                    *st = new_st;
+                },
+                _ => (),
+            }
+        }
+
+        self.free_reg(reg);
+    }
+
+    pub fn alloc_reg(&mut self) -> u32 {
+        if let Some(reg) = self.allocator.free_regs.pop_back() {
+            self.in_use_regs.push_back(reg);
+            reg
+        } else {
+            let reg = self.allocator.used_regs.pop_back().expect("no free registers available");
+            // used regs needs to be pushed to stack
+            self.in_use_regs.push_back(reg);
+            reg
+        }
+    }
+
+    pub fn promote_entry_to_reg(&mut self, ent: StackEntry) -> u32 {
+        match ent {
+            StackEntry { ty: _, loc: Loc::Reg(reg) } => reg,
+            StackEntry { ty: _, loc: Loc::Stack(idx) } => {
+                let reg = self.allocator.alloc_regs(1, None)[0];
+                self.allocator.load_from_stack_to_reg(&mut self.ops, idx, reg);
+                reg
+            },
+            StackEntry { ty: LocTy::Ref, loc: Loc::Reg(reg) } => {
+                let new_reg = self.allocator.alloc_regs(1, None)[0];
+                mdynasm!(self.ops
+                    ; mov X(new_reg), X(reg)
+                );
+                new_reg
+            },
+            StackEntry { ty: LocTy::Ref, loc: Loc::Stack(idx) } => {
+                let reg = self.allocator.alloc_regs(1, None)[0];
+                self.allocator.load_from_stack_to_reg(&mut self.ops, idx, reg);
+                reg
+            },
+        }
+    }
+
+    fn commit(self) {
+        self.allocator.used_regs.extend(self.in_use_regs);
     }
 }
 
@@ -372,7 +438,7 @@ impl CompiledBlockCache {
         }
 
         for i in 1..=chunk.in_arg {
-            malloc.vm_stack.push(StackEntry::Origin(Loc::Stack(i)));
+            malloc.vm_stack.push(LocTy::Origin(Loc::Stack(i)));
         }
         malloc.asm_stack_size = chunk.in_arg as _;
 
@@ -461,8 +527,14 @@ impl CompiledBlockCache {
                     malloc.clone_entry_to_top(*stack_idx as usize);
                 },
                 Op::SetVar { stack_idx } => {
-                    let [val] = malloc.promote_entries_to_regs(&mut ops, &[*malloc.vm_stack.last().unwrap()]);
+                    let [val_entry] = malloc.pop_vm_stack_to_regs(&mut ops);
+                    let to_set_entry = malloc.vm_stack[*stack_idx as usize];
+                    if let LocTy::Ref(Loc::Reg(ref_reg)) = to_set_entry {
+                        let [val, ref_reg] = malloc.promote_entries_to_regs(&mut ops, &[val_entry, to_set_entry]);
+                    }
+                    let [val] = malloc.promote_entries_to_regs(&mut ops, &[val_entry]);
                     let reg = malloc.obtain_mutable_reg_entry(&mut ops, *stack_idx as usize);
+                    debug!("X{reg} <- X{val}");
                     mdynasm!(ops
                         ; mov X(reg), X(val)
                     );
@@ -481,6 +553,7 @@ impl CompiledBlockCache {
                 },
                 Op::Jump { label_id } => {
                     let label = *labels.get(label_id).unwrap();
+                    malloc.demote_all_regs_to_stack(&mut ops);
                     mdynasm!(ops
                         ; b =>label
                     );
