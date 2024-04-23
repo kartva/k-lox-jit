@@ -4,7 +4,7 @@ use crate::{parse::{ExprTy, Spanned}, vm::{ByteCode, ByteCodeChunk, Op}};
 use ariadne::{Color, Label, Report, ReportKind};
 
 #[derive(Debug, Clone, Copy)]
-struct StackIdx(u32);
+struct StackIdx(usize);
 
 #[derive(Debug, Clone, Copy)]
 struct FuncIdx(u32);
@@ -19,7 +19,7 @@ enum ScopeTy {
 #[derive(Debug, Default)]
 struct Scope {
 	ty: ScopeTy,
-	start_idx: u32,
+	start_idx: usize,
 	vars: HashMap<String, StackIdx>,
 	fns: HashMap<String, FuncIdx>
 }
@@ -32,13 +32,13 @@ impl Scope {
 	fn new_with_type(parent_scope: Option<&Scope>, ty: ScopeTy) -> Self {
 		Scope {
 			ty,
-			start_idx: parent_scope.map(|p| p.start_idx + p.vars.len() as u32).unwrap_or(0),
+			start_idx: parent_scope.map(|p| p.start_idx + p.vars.len()).unwrap_or(0),
 			..Default::default()
 		}
 	}
 
 	fn alloc(&mut self, name: String) -> StackIdx {
-		let reg = StackIdx(self.start_idx + self.vars.len() as u32);
+		let reg = StackIdx(self.start_idx + self.vars.len());
 		self.vars.insert(name, reg);
 		reg
 	}
@@ -268,6 +268,7 @@ fn emit_stmt(node: &Spanned, ctx: &mut CodegenCtx) {
 			match ctx.get(name.as_str()) {
 				Some(reg) => {
 					ctx.block().push(Op::SetVar { stack_idx: reg.0 });
+					ctx.block().push(Op::Pop { count: 1 });
 				},
 				None => {
 					ctx.register_new_report(Report::build(ReportKind::Error, (), span.start)
@@ -331,7 +332,7 @@ fn emit_stmt_block(body: &[Spanned], ctx: &mut CodegenCtx) {
 
 fn emit_fn(Spanned(e, span): Spanned, ctx: &mut CodegenCtx) {
 	if let ExprTy::Fn { name, args, body } = e {
-		let fn_idx = ctx.alloc_fn(name.clone());
+		ctx.alloc_fn(name.clone());
 		ctx.start_new_block();
 		ctx.start_new_scope();
 

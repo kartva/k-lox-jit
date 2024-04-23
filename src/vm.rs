@@ -11,8 +11,8 @@ pub enum Op {
 	LessThanEq,
 	GreaterThanEq,
 	/// idx is zero-indexed
-	LoadVar { stack_idx: u32 },
-	SetVar { stack_idx: u32 },
+	LoadVar { stack_idx: usize },
+	SetVar { stack_idx: usize },
 	JumpLabel { label_id: usize },
 	Jump { label_id: usize },
 	JumpIfZero { label_id: usize },

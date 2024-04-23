@@ -1,9 +1,11 @@
 fn main () {
 	var n = 5;
 	var i = 1;
+	var acc = 1;
 
 	while (i <= n) {
+		acc = acc * i;
 		i = i + 1;
 	};
-	return i;
+	return acc;
 }

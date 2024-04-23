@@ -33,7 +33,7 @@ fn run_last_fn (src: &str) -> i64 {
 }
 
 fn main() {
-    SimpleLogger::new().init().unwrap();
+    SimpleLogger::new().without_timestamps().init().unwrap();
     let args = Args::parse();
 
     let mut buf = String::new();
