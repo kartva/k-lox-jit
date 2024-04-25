@@ -183,8 +183,8 @@ impl MemTransaction<'_> {
         self.in_use_regs.retain(|&r| r != reg);
     }
 
-    /// Demotes registers to stack locations.
-    /// For each register, scans the VM stack for all references to the register and replaces them with a newly allocated stack location.
+    /// Demotes register to stack locations.
+    /// Scans the VM stack for all references to the register and replaces them with a newly allocated stack location.
     /// The registers are then freed.
     fn demote_reg_to_stack(&mut self, ops: &mut aarch64::Assembler, reg: u32) {
         let stack_entry = self.allocator.alloc_asm_stack_entry();
