@@ -5,10 +5,10 @@ use std::ptr::null;
 use clap::Parser;
 
 use log::debug;
-use lox_jit::codegen::codegen;
-use lox_jit::error;
-use lox_jit::jit::{call_fn, CompiledBlockCache};
-use lox_jit::parse::parse_text;
+use k_lox_jit::codegen::codegen;
+use k_lox_jit::error;
+use k_lox_jit::jit::{call_fn, CompiledBlockCache};
+use k_lox_jit::parse::parse_text;
 use simple_logger::SimpleLogger;
 
 #[derive(Parser, Debug)]
@@ -33,7 +33,7 @@ fn run_last_fn (src: &str) -> i64 {
 }
 
 fn main() {
-    SimpleLogger::new().init().unwrap();
+    SimpleLogger::new().without_timestamps().init().unwrap();
     let args = Args::parse();
 
     let mut buf = String::new();
