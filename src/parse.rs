@@ -78,7 +78,6 @@ fn parse() -> impl Parser<char, Vec<Spanned>, Error = Simple<char>> {
 
     let delim = |c| just(c).padded();
 
-    let mut stmt_block = Recursive::<_, _, Simple<char>>::declare();
     let expr = recursive(|expr| {
         let int = text::int(10)
             .map_with_span(|s: String, span| Spanned(ExprTy::Num(s.parse().unwrap()), span))
@@ -99,30 +98,11 @@ fn parse() -> impl Parser<char, Vec<Spanned>, Error = Simple<char>> {
             )
             .map_with_span(|(name, args), span| Spanned(ExprTy::Call(name, args), span));
 
-        let r#if = text::keyword("if")
-            .padded()
-            .ignore_then(expr.clone().padded().delimited_by(delim('('), delim(')')))
-            .debug("if_cond")
-            .then(stmt_block.clone().padded())
-            .debug("if_then")
-            .then(
-                text::keyword("else")
-                    .padded()
-                    .ignore_then(stmt_block.clone().padded())
-                    .debug("if_else")
-                    .or_not(),
-            )
-            .map_with_span(|((cond, then), r#else), span| Spanned(ExprTy::If {
-                cond: Box::new(cond),
-                then,
-                r#else,
-            }, span));
-
         let op = |c| just(c).padded();
 
         let unary = op("-").map_with_span(|_, span: Range<usize>| span)
             .repeated()
-            .then(r#if.or(call).or(atom))
+            .then(call.or(atom))
             .foldr(|neg: Range<usize>, rhs: Spanned| {
                 let span = neg.start..rhs.1.end;
                 Spanned(ExprTy::Neg(Box::new(rhs)), span)
@@ -196,27 +176,46 @@ fn parse() -> impl Parser<char, Vec<Spanned>, Error = Simple<char>> {
             expr: Box::new(expr),
         }, span));
 
-    let r#while = text::keyword("while")
-        .padded()
-        .ignore_then(expr.clone().padded().delimited_by(delim('('), delim(')')))
-        .debug("while_cond")
-        .then(stmt_block.clone().padded())
-        .debug("while_body")
-        .map_with_span(|(cond, body), span| Spanned(ExprTy::While {
-            cond: Box::new(cond),
-            body,
-        }, span));
+    let stmt_block = recursive(|stmt_block| {
+        let r#if = text::keyword("if")
+            .padded()
+            .ignore_then(expr.clone().padded().delimited_by(delim('('), delim(')')))
+            .debug("if_cond")
+            .then(stmt_block.clone().padded())
+            .debug("if_then")
+            .then(
+                text::keyword("else")
+                    .padded()
+                    .ignore_then(stmt_block.clone().padded())
+                    .debug("if_else")
+                    .or_not(),
+            )
+            .map_with_span(|((cond, then), r#else), span| Spanned(ExprTy::If {
+                cond: Box::new(cond),
+                then,
+                r#else,
+            }, span));
 
-    stmt_block.define(
+        let r#while = text::keyword("while")
+            .padded()
+            .ignore_then(expr.clone().padded().delimited_by(delim('('), delim(')')))
+            .debug("while_cond")
+            .then(stmt_block.clone().padded())
+            .debug("while_body")
+            .map_with_span(|(cond, body), span| Spanned(ExprTy::While {
+                cond: Box::new(cond),
+                body,
+            }, span));
+
         Repeated::at_least(
-            r#return.or(r#while).or(var_decl).or(var_set).or(expr.clone())
+            r#return.or(r#if).or(r#while).or(var_decl).or(var_set).or(expr.clone())
                 .then_ignore(delim(';'))
                 .repeated(),
                 1
             )
         .delimited_by(delim('{'), delim('}'))
         .debug("{stmt_block}")
-    );
+    });
 
     let r#fn = text::keyword("fn")
         .padded()
