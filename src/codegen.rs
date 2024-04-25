@@ -113,12 +113,8 @@ impl CodegenCtx {
 	}
 
 	/// Finish the current scope and pop all variables
-	/// and push the result of the scope (topmost stack value) to the stack
 	fn finish_scope(&mut self) {
 		if !self.scope().vars.is_empty() {
-			let result_set = Op::SetVar { stack_idx: self.scope().start_idx };
-			self.block().push(result_set);
-		
 			// pop used variables
 			let count = self.scope().vars.len() as u32;
 			self.block().push(Op::Pop { count });
