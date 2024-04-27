@@ -1,4 +1,4 @@
-use std::{collections::{HashMap, VecDeque}, fmt::Display};
+use std::{collections::{HashMap, VecDeque}, fmt::Display, marker::PhantomPinned};
 
 use crate::
     vm::{ByteCode, Op}
@@ -28,6 +28,7 @@ pub struct CompiledBlockCache {
     // add exec metadata to ExecutableBuffer for specialized compilation
     // switch to LRU cache
     cache: HashMap<usize, (ExecutableBuffer, AssemblyOffset)>,
+    _safety: PhantomPinned
 }
 
 /// # Safety
@@ -353,7 +354,8 @@ impl CompiledBlockCache {
     pub fn new(bc: ByteCode) -> Box<CompiledBlockCache> {
         Box::new(CompiledBlockCache {
             bc,
-            cache: HashMap::new()
+            cache: HashMap::new(),
+            _safety: PhantomPinned,
         })
     }
 
@@ -523,14 +525,12 @@ impl CompiledBlockCache {
                 },
                 Op::JumpLabel { label_id} => {
                     let label = *labels.get(label_id).unwrap();
-                    malloc.start_txn().demote_all_regs_to_stack(&mut ops);
                     mdynasm!(ops
                         ; =>label
                     );
                 },
                 Op::Jump { label_id } => {
                     let label = *labels.get(label_id).unwrap();
-                    malloc.start_txn().demote_all_regs_to_stack(&mut ops);
                     mdynasm!(ops
                         ; b =>label
                     );
@@ -538,7 +538,6 @@ impl CompiledBlockCache {
                 Op::JumpIfZero { label_id } => {
                     let label = *labels.get(label_id).unwrap();
                     let [reg] = malloc.start_txn().pop_vm_stack_to_regs(&mut ops);
-                    malloc.start_txn().demote_all_regs_to_stack(&mut ops);
                     mdynasm!(ops
                         ; cbz X(reg), =>label
                     );
