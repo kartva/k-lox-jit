@@ -5,7 +5,9 @@ fn main () {
 
 	while (i <= n) {
 		acc = acc * i;
+		print acc;
 		i = i + 1;
 	};
+
 	return acc;
 }

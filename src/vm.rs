@@ -1,4 +1,4 @@
-#[derive(Debug, PartialEq, Eq, Hash)]
+#[derive(Debug, PartialEq, Eq, Hash, Clone, Copy)]
 pub enum Op {
 	Constant { val: i64 },
 	Add,
@@ -17,7 +17,13 @@ pub enum Op {
 	Jump { label_id: usize },
 	JumpIfZero { label_id: usize },
 	Call { fn_idx: u32, word_argc: u32 },
+	CallExternal { ext_call: ExternalCall },
 	Return
+}
+
+#[derive(Debug, PartialEq, Eq, Hash, Clone, Copy)]
+pub enum ExternalCall {
+	Print
 }
 
 #[derive(Debug)]

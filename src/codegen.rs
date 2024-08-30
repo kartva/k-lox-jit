@@ -1,6 +1,6 @@
 use std::{collections::HashMap, ops::Range};
 
-use crate::{parse::{ExprTy, Spanned}, vm::{ByteCode, ByteCodeChunk, Op}};
+use crate::{parse::{ExprTy, Spanned}, vm::{ByteCode, ByteCodeChunk, ExternalCall, Op}};
 use ariadne::{Color, Label, Report, ReportKind};
 
 #[derive(Debug, Clone, Copy)]
@@ -202,18 +202,39 @@ fn emit_expr(Spanned(e, span): &Spanned, ctx: &mut CodegenCtx) {
 				emit_expr(arg, ctx);
 			}
 
-			match ctx.get_fn(name) {
-				Some(fn_idx) => {
-					ctx.block().push(Op::Call { fn_idx: fn_idx.0, word_argc: args.len() as u32 });
-				},
-				None => {
+			// every expression produces a value on the stack, and is popped afterward
+			// functions with no return value must still return _something_ to keep the stack balanced
+
+			if let Some ((argc, ext_call)) = match name.as_str() {
+				"print" => Some ((1, ExternalCall::Print)),
+				_ => None
+			} {
+				if args.len() != argc {
 					ctx.register_new_report(Report::build(ReportKind::Error, (), span.start)
-						.with_message(format!("Undeclared function {}", name))
+						.with_message(format!("Expected {} arguments, found {}", argc, args.len()))
 						.with_label(
 							Label::new(span.clone())
-								.with_message("Undeclared function")
+								.with_message("Incorrect number of arguments")
 								.with_color(Color::Red))
 						.finish());
+				}
+
+				ctx.block().push(Op::CallExternal { ext_call });
+			} else {
+				match ctx.get_fn(name) {
+					Some(fn_idx) => {
+						// TODO: add checking for incorrect number of arguments
+						ctx.block().push(Op::Call { fn_idx: fn_idx.0, word_argc: args.len() as u32 });
+					},
+					None => {
+						ctx.register_new_report(Report::build(ReportKind::Error, (), span.start)
+							.with_message(format!("Undeclared function {}", name))
+							.with_label(
+								Label::new(span.clone())
+									.with_message("Undeclared function")
+									.with_color(Color::Red))
+							.finish());
+					}
 				}
 			}
 		},
@@ -403,7 +424,7 @@ mod tests {
 			Op::Constant { val: 3 }, 	    // else branch
 			Op::JumpLabel { label_id: 1 },  // end of if-else
 			Op::SetVar { stack_idx: 0 },	// store result of if-else (by overwriting x's place on stack)
-			Op::Pop { count: 1 },						// pop upper values
+			Op::Pop { count: 1 },			// pop upper values
 			Op::Return
 		]);
 	}

@@ -65,7 +65,11 @@ impl PartialEq for Spanned {
 
 impl Eq for Spanned {}
 
-fn create_span_from_pair(lhs: Spanned, op: fn(Box<Spanned>, Box<Spanned>) -> ExprTy, rhs: Spanned) -> Spanned {
+fn create_span_from_pair(
+    lhs: Spanned,
+    op: fn(Box<Spanned>, Box<Spanned>) -> ExprTy,
+    rhs: Spanned,
+) -> Spanned {
     let span = lhs.1.start..rhs.1.end;
     Spanned(op(Box::new(lhs), Box::new(rhs)), span)
 }
@@ -85,7 +89,9 @@ fn parse() -> impl Parser<char, Vec<Spanned>, Error = Simple<char>> {
 
         let atom = int
             .or(expr.clone().delimited_by(delim('('), delim(')')))
-            .or(ident.debug("var").map_with_span(|atom, span| Spanned(ExprTy::Var(atom), span)));
+            .or(ident
+                .debug("var")
+                .map_with_span(|atom, span| Spanned(ExprTy::Var(atom), span)));
 
         let call = ident
             .debug("call_func_name")
@@ -100,7 +106,8 @@ fn parse() -> impl Parser<char, Vec<Spanned>, Error = Simple<char>> {
 
         let op = |c| just(c).padded();
 
-        let unary = op("-").map_with_span(|_, span: Range<usize>| span)
+        let unary = op("-")
+            .map_with_span(|_, span: Range<usize>| span)
             .repeated()
             .then(call.or(atom))
             .foldr(|neg: Range<usize>, rhs: Spanned| {
@@ -130,10 +137,10 @@ fn parse() -> impl Parser<char, Vec<Spanned>, Error = Simple<char>> {
             )
             .foldl(|lhs, (op, rhs)| create_span_from_pair(lhs, op, rhs));
 
-        sum
-            .clone()
+        sum.clone()
             .then(
-                op("<=").to(ExprTy::LessThanEq as fn(_, _) -> _)
+                op("<=")
+                    .to(ExprTy::LessThanEq as fn(_, _) -> _)
                     .or(op(">=").to(ExprTy::GreaterThanEq as fn(_, _) -> _))
                     .or(op(">").to(ExprTy::GreaterThan as fn(_, _) -> _))
                     .or(op("<").to(ExprTy::LessThan as fn(_, _) -> _))
@@ -142,7 +149,8 @@ fn parse() -> impl Parser<char, Vec<Spanned>, Error = Simple<char>> {
             )
             .foldl(|lhs, (op, rhs)| create_span_from_pair(lhs, op, rhs))
     })
-    .debug("expr").labelled("expr");
+    .debug("expr")
+    .labelled("expr");
 
     let var_decl = text::keyword("var")
         .padded()
@@ -152,29 +160,51 @@ fn parse() -> impl Parser<char, Vec<Spanned>, Error = Simple<char>> {
                 .ignore_then(expr.clone().debug("var_rhs"))
                 .or_not(),
         )
-        .map_with_span(|(name, rhs), span| Spanned(ExprTy::VarDecl {
-            name,
-            rhs: rhs.map(Box::new),
-        }, span))
-        .debug("var_decl").labelled("var_decl");
+        .map_with_span(|(name, rhs), span| {
+            Spanned(
+                ExprTy::VarDecl {
+                    name,
+                    rhs: rhs.map(Box::new),
+                },
+                span,
+            )
+        })
+        .debug("var_decl")
+        .labelled("var_decl");
+
+    let print = text::keyword("print")
+        .padded()
+        .ignore_then(expr.clone().debug("print_expr"))
+        .map_with_span(|expr, span| Spanned(ExprTy::Call("print".to_string(), vec![expr]), span));
 
     let var_set = ident
         .debug("var_name")
         .then_ignore(delim('='))
         .then(expr.clone().debug("var_rhs"))
-        .map_with_span(|(name, rhs), span| Spanned(ExprTy::Set {
-            name,
-            rhs: Box::new(rhs),
-        }, span))
-        .debug("var_set").labelled("var_set");
+        .map_with_span(|(name, rhs), span| {
+            Spanned(
+                ExprTy::Set {
+                    name,
+                    rhs: Box::new(rhs),
+                },
+                span,
+            )
+        })
+        .debug("var_set")
+        .labelled("var_set");
 
     let r#return = text::keyword("return")
         .padded()
         .ignore_then(expr.clone().padded())
         .debug("return")
-        .map_with_span(|expr, span| Spanned(ExprTy::Return {
-            expr: Box::new(expr),
-        }, span));
+        .map_with_span(|expr, span| {
+            Spanned(
+                ExprTy::Return {
+                    expr: Box::new(expr),
+                },
+                span,
+            )
+        });
 
     let stmt_block = recursive(|stmt_block| {
         let r#if = text::keyword("if")
@@ -190,11 +220,16 @@ fn parse() -> impl Parser<char, Vec<Spanned>, Error = Simple<char>> {
                     .debug("if_else")
                     .or_not(),
             )
-            .map_with_span(|((cond, then), r#else), span| Spanned(ExprTy::If {
-                cond: Box::new(cond),
-                then,
-                r#else,
-            }, span));
+            .map_with_span(|((cond, then), r#else), span| {
+                Spanned(
+                    ExprTy::If {
+                        cond: Box::new(cond),
+                        then,
+                        r#else,
+                    },
+                    span,
+                )
+            });
 
         let r#while = text::keyword("while")
             .padded()
@@ -202,17 +237,28 @@ fn parse() -> impl Parser<char, Vec<Spanned>, Error = Simple<char>> {
             .debug("while_cond")
             .then(stmt_block.clone().padded())
             .debug("while_body")
-            .map_with_span(|(cond, body), span| Spanned(ExprTy::While {
-                cond: Box::new(cond),
-                body,
-            }, span));
+            .map_with_span(|(cond, body), span| {
+                Spanned(
+                    ExprTy::While {
+                        cond: Box::new(cond),
+                        body,
+                    },
+                    span,
+                )
+            });
 
         Repeated::at_least(
-            r#return.or(r#if).or(r#while).or(var_decl).or(var_set).or(expr.clone())
+            r#return
+                .or(r#if)
+                .or(r#while)
+                .or(var_decl)
+                .or(var_set)
+                .or(print)
+                .or(expr.clone())
                 .then_ignore(delim(';'))
                 .repeated(),
-                1
-            )
+            1,
+        )
         .delimited_by(delim('{'), delim('}'))
         .debug("{stmt_block}")
     });
@@ -237,7 +283,9 @@ fn parse() -> impl Parser<char, Vec<Spanned>, Error = Simple<char>> {
 }
 
 pub fn parse_text(src: &str) -> Vec<Spanned> {
-    parse().parse(src).unwrap_or_else(|errs| panic!("{}", format_parse_errors(src, errs))) 
+    parse()
+        .parse(src)
+        .unwrap_or_else(|errs| panic!("{}", format_parse_errors(src, errs)))
 }
 
 #[cfg(test)]
@@ -246,7 +294,7 @@ mod tests {
 
     #[test]
     fn test_function() {
-        let src = "fn add (x, y) { var x = x + y; return x; }";
+        let src = "fn add (x, y) { var x = x + y; print x; return x; }";
         let (expr, err) = parse().parse_recovery_verbose(src);
         if !err.is_empty() {
             panic!("{:?}", err);
@@ -259,16 +307,27 @@ mod tests {
                 body: vec![
                     ExprTy::VarDecl {
                         name: "x".to_string(),
-                        rhs: Some(Box::new(ExprTy::Add(
-                            Box::new(ExprTy::Var("x".to_string()).into()),
-                            Box::new(ExprTy::Var("y".to_string()).into())
-                        ).into())),
-                    }.into(),
+                        rhs: Some(Box::new(
+                            ExprTy::Add(
+                                Box::new(ExprTy::Var("x".to_string()).into()),
+                                Box::new(ExprTy::Var("y".to_string()).into())
+                            )
+                            .into()
+                        )),
+                    }
+                    .into(),
+                    ExprTy::Call(
+                        "print".to_string(),
+                        vec![ExprTy::Var("x".to_string()).into()]
+                    )
+                    .into(),
                     ExprTy::Return {
                         expr: Box::new(ExprTy::Var("x".to_string()).into())
-                    }.into()
+                    }
+                    .into()
                 ],
-            }.into()])
+            }
+            .into()])
         );
     }
 
@@ -286,20 +345,28 @@ mod tests {
                 ExprTy::Fn {
                     name: "fst".to_string(),
                     args: vec!["x".to_string(), "y".to_string()],
-                    body: vec![ExprTy::Return { expr: ExprTy::Var("x".to_string()).into() }.into()],
-                }.into(),
+                    body: vec![ExprTy::Return {
+                        expr: ExprTy::Var("x".to_string()).into()
+                    }
+                    .into()],
+                }
+                .into(),
                 ExprTy::Fn {
                     name: "sec".to_string(),
                     args: vec!["x".to_string(), "y".to_string()],
-                    body: vec![
-                        ExprTy::Return {
-                            expr: ExprTy::Call(
-                                "fst".to_string(),
-                                vec![ExprTy::Var("y".to_string()).into(), ExprTy::Var("x".to_string()).into()]
-                            ).into()
-                        }.into()
-                    ],
-                }.into(),
+                    body: vec![ExprTy::Return {
+                        expr: ExprTy::Call(
+                            "fst".to_string(),
+                            vec![
+                                ExprTy::Var("y".to_string()).into(),
+                                ExprTy::Var("x".to_string()).into()
+                            ]
+                        )
+                        .into()
+                    }
+                    .into()],
+                }
+                .into(),
             ])
         );
     }
@@ -320,11 +387,20 @@ mod tests {
                     cond: ExprTy::LessThan(
                         ExprTy::Var("x".to_string()).into(),
                         ExprTy::Num(0).into()
-                    ).into(),
-                    then: vec![ExprTy::Return { expr: ExprTy::Neg(ExprTy::Var("x".to_string()).into()).into() }.into()],
-                    r#else: Some(vec![ExprTy::Return { expr:ExprTy::Var("x".to_string()).into() }.into() ]),
-                }.into()),
-            }.into()])
+                    )
+                    .into(),
+                    then: vec![ExprTy::Return {
+                        expr: ExprTy::Neg(ExprTy::Var("x".to_string()).into()).into()
+                    }
+                    .into()],
+                    r#else: Some(vec![ExprTy::Return {
+                        expr: ExprTy::Var("x".to_string()).into()
+                    }
+                    .into()]),
+                }
+                .into()),
+            }
+            .into()])
         );
     }
 
@@ -344,36 +420,52 @@ mod tests {
                     ExprTy::VarDecl {
                         name: "acc".to_string(),
                         rhs: Some(ExprTy::Num(1).into()),
-                    }.into(),
+                    }
+                    .into(),
                     ExprTy::VarDecl {
                         name: "i".to_string(),
                         rhs: Some(ExprTy::Num(1).into()),
-                    }.into(),
+                    }
+                    .into(),
                     ExprTy::While {
                         cond: ExprTy::LessThanEq(
                             ExprTy::Var("i".to_string()).into(),
                             ExprTy::Var("n".to_string()).into()
-                        ).into(),
+                        )
+                        .into(),
                         body: vec![
                             ExprTy::Set {
                                 name: "acc".to_string(),
-                                rhs: Box::new(ExprTy::Mul(
-                                    ExprTy::Var("acc".to_string()).into(),
-                                    ExprTy::Var("i".to_string()).into()
-                                ).into()),
-                            }.into(),
+                                rhs: Box::new(
+                                    ExprTy::Mul(
+                                        ExprTy::Var("acc".to_string()).into(),
+                                        ExprTy::Var("i".to_string()).into()
+                                    )
+                                    .into()
+                                ),
+                            }
+                            .into(),
                             ExprTy::Set {
                                 name: "i".to_string(),
-                                rhs: Box::new(ExprTy::Add(
-                                    ExprTy::Var("i".to_string()).into(),
-                                    ExprTy::Num(1).into()
-                                ).into()),
-                            }.into(),
+                                rhs: Box::new(
+                                    ExprTy::Add(
+                                        ExprTy::Var("i".to_string()).into(),
+                                        ExprTy::Num(1).into()
+                                    )
+                                    .into()
+                                ),
+                            }
+                            .into(),
                         ],
-                    }.into(),
-                    ExprTy::Return { expr: ExprTy::Var("acc".to_string()).into() }.into(),
+                    }
+                    .into(),
+                    ExprTy::Return {
+                        expr: ExprTy::Var("acc".to_string()).into()
+                    }
+                    .into(),
                 ],
-            }.into()])
+            }
+            .into()])
         )
     }
 }

@@ -1,3 +1,7 @@
+### Ideas:
+- AOT compiler with incremental compilation
+- JIT compiler with incremental compilation (across runs!)
+
 ### Roadmap:
 - Register allocation for JITter
 - Interpreter for bytecode (to switch between JIT and interpreter)
@@ -7,6 +11,9 @@
 3. Closures
 4. Garbage collector
 5. Async/await runtime (event loop)
+
+### Notes from Mukul
+// Have an effects-based register allocator system
 
 ### Notes from Vihaan
 // neutral and absorbing elements in arithmatic
