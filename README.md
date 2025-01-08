@@ -196,7 +196,30 @@ add sp, sp, #(word_argc * 16) ; pop args
 str x0, [sp, #-16]! ; store return value on stack
 ```
 
+# Running the examples
+
+## Running the example file
+You can run the example files after installing QEMU and the aarch64-linux-gnu toolchain. (Or natively on an ARM64 machine)
+
+The [.cargo/config.toml](.cargo/config.toml) file contains the necessary configuration, so this just works on my x86 machine:
+```bash
+cargo run test.lox
+```
+
+## Debugging the generated assembly
+
+```bash
+cargo test
+# cargo test will fail, and provide the name of the executable
+# example command:
+qemu-aarch64 -g 1234 -L /usr/aarch64-linux-gnu target/aarch64-unknown-linux-gnu/debug/lox-jit test.lox
+# the -g 1234 option will make qemu wait for gdb to connect at port 1234 before executing
+# run gdb with the executable name, and run a command to connect to the qemu instance using -ex
+gdb-multiarch -q --se=/full/path/to/k-lox-jit/target/aarch64-unknown-linux-gnu/debug/lox-jit -ex 'set architecture aarch64' -ex 'target remote localhost:1234'
+```
+
 # Future Improvements
+
 - Reduce basic-block size from functions to syntactical blocks (such as if-statements, while-loops, etc.)
 - On compilation of function, rewrite calling code to directly call the generated assembly for future calls instead of looking up compiled functions in cache.
 
@@ -204,15 +227,18 @@ str x0, [sp, #-16]! ; store return value on stack
 
 - Utilize run-time information to specialize compiled functions to specific call-site. For example, if a loop calls a function with integer arguments, we can specialize the generated assembly to assume integer arguments and improve performance. In the case when we are passed a non-integer argument, we despecialize to a generic compilation that can handle all types.
 
-- Implement register allocation to massively reduce stack manipulation overhead. There is a prototype present in the repository's main branch, but it cannot handle branches right now (and is generally unreliable).
+- Implement register allocation to reduce stack manipulation overhead.
 
 - Introduce a register-based (possibly SSA) IR to optimize register allocation.
 
 # Acknowledgements
+
 Jinglei Cheng mentored me and Harry Zheng in building our implementations.
 
-# Appendix A: Lox (Kartavya's Version) Specification <appendix-a>
+# Appendix A: Lox (Kartavya's Version) Specification <a id="appendix-a"></a>
+
 ## Syntax in BNF form
+
 ```
 ident ::= [a-zA-Z] [a-zA-Z0-9_]*
 
