@@ -1,4 +1,5 @@
-**This is a Markdown converted version of the report. For better formatting, [look at the PDF instead!](media/Computer%20Architecture%20Honors%20Contract%20in%20Just-In-Time%20Compilers.pdf)**
+> [!IMPORTANT]
+> **This is a Markdown converted version of the report. For better formatting, [look at the PDF instead!](media/Computer%20Architecture%20Honors%20Contract%20in%20Just-In-Time%20Compilers.pdf)**
 
 # Introduction
 Just-In-Time (JIT) compilers are programs that simultaneously translate source code to target code while executing target code. This can be understood in contrast with Ahead-Of-Time (AOT) compilers that translate source code to target code and produce an artifact which may be executed later.
